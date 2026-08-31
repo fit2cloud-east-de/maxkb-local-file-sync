@@ -7,8 +7,8 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "maekblack",
-    "email": "maekblack@qq.com"
+    "name": "taosheng",
+    "email": "taosheng.zhang@fit2cloud.com"
   },
   "info": {
     "productName": "MaxKB 本地文件同步工具",
