@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"maxkb-local-file-sync/internal/infra/file"
 	"maxkb-local-file-sync/internal/infra/logger"
 	"maxkb-local-file-sync/internal/pkg/types"
 	"maxkb-local-file-sync/internal/repository"
@@ -72,6 +73,14 @@ func (s *TaskService) CreateTask(ctx context.Context, folderID string, triggerTy
 	pendingFiles, err := s.fileRepo.ListPendingChanges(ctx, folderID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pending changes: %w", err)
+	}
+
+	// 扫描结果会持久化文件状态，而历史遗留的 PENDING/STALE 状态可能
+	// 来自筛选规则修改之前。创建批次前必须再次应用当前 Include/Exclude，
+	// 否则已经被 Exclude 排除的文件仍可能凭旧状态进入执行队列。
+	pendingFiles, err = filterPendingFilesByCurrentFolderConfig(folder, pendingFiles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply current file filters: %w", err)
 	}
 
 	if len(pendingFiles) == 0 {
@@ -217,6 +226,35 @@ func (s *TaskService) RetryFailedTask(ctx context.Context, sourceTaskID string) 
 	}
 	s.logger.Info("Created retry sync task: task_id=%s, source_task_id=%s, files=%d", retryTask.TaskID, sourceTaskID, len(runPlan))
 	return retryTask, nil
+}
+
+func filterPendingFilesByCurrentFolderConfig(folder *repository.SyncFolder, pendingFiles []*repository.SyncFile) ([]*repository.SyncFile, error) {
+	if folder == nil {
+		return nil, errors.New("sync folder is nil")
+	}
+	matcher, err := newPathMatcher(folder.IncludePatterns, folder.ExcludePatterns)
+	if err != nil {
+		return nil, err
+	}
+	mineruExtensions := file.ParseExtensions(folder.MinerUFileExtensions)
+	filtered := make([]*repository.SyncFile, 0, len(pendingFiles))
+	for _, syncFile := range pendingFiles {
+		if syncFile == nil {
+			continue
+		}
+		// A local deletion is represented by NEEDS_DELETE. The source path is
+		// no longer present on disk, so it must remain actionable even if the
+		// current Include/Exclude rules would not match that old path.
+		if syncFile.FileStatus == types.FileStatusNeedsDelete {
+			filtered = append(filtered, syncFile)
+			continue
+		}
+		if !matcher.Match(syncFile.RelativePath) || !isSupportedForSync(syncFile.RelativePath, folder.EnableMinerU, mineruExtensions) {
+			continue
+		}
+		filtered = append(filtered, syncFile)
+	}
+	return filtered, nil
 }
 
 func attemptHasRemoteReference(attempt *repository.FileAttempt) bool {
