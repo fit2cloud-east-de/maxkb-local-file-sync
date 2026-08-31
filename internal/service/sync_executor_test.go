@@ -74,6 +74,17 @@ func TestSmartSplitFromPathUsesSnapshotAndStableMetadata(t *testing.T) {
 	}
 }
 
+func TestSmartSplitTimeoutRequiresReconciliation(t *testing.T) {
+	t.Parallel()
+
+	if !smartSplitRequiresReconcile(&adapter.MaxKBError{Type: adapter.MaxKBErrorTimeout}) {
+		t.Fatal("timeout should require reconciliation")
+	}
+	if smartSplitRequiresReconcile(&adapter.MaxKBError{Type: adapter.MaxKBErrorIncompatible}) {
+		t.Fatal("incompatible response should remain a normal failure")
+	}
+}
+
 func TestSmartSplitFailureCodeClassifiesIncompatibleMaxKBResponse(t *testing.T) {
 	t.Parallel()
 

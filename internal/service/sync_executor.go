@@ -362,7 +362,7 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 		}
 		split, err = e.smartSplitFromPath(ctx, maxkb, folder.WorkspaceID, folder.KBId, contentPath, contentFileName, contentSize)
 		if err != nil {
-			return e.fail(ctx, rf, smartSplitFailureCode(err), err.Error(), false)
+			return e.fail(ctx, rf, smartSplitFailureCode(err), err.Error(), smartSplitRequiresReconcile(err))
 		}
 		if split == nil || split.SourceFileID == "" {
 			return e.fail(ctx, rf, "MAXKB_SPLIT_INCOMPATIBLE", "MaxKB split returned no source_file_id", false)
@@ -377,7 +377,7 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 		// document mapping side effect; repeat it from the immutable content.
 		split, err = e.smartSplitFromPath(ctx, maxkb, folder.WorkspaceID, folder.KBId, contentPath, contentFileName, contentSize)
 		if err != nil {
-			return e.fail(ctx, rf, smartSplitFailureCode(err), err.Error(), false)
+			return e.fail(ctx, rf, smartSplitFailureCode(err), err.Error(), smartSplitRequiresReconcile(err))
 		}
 	}
 
@@ -675,6 +675,15 @@ func (e *SyncExecutor) waitBatch(ctx context.Context, m adapter.MaxKBAdapter, fo
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+// smartSplitRequiresReconcile identifies failures where MaxKB may have
+// accepted the multipart request but the client did not receive a response.
+// Such an outcome must not be treated as an ordinary failed file: the user
+// needs to explicitly confirm remote absence before retrying.
+func smartSplitRequiresReconcile(err error) bool {
+	var maxErr *adapter.MaxKBError
+	return errors.As(err, &maxErr) && maxErr != nil && maxErr.Type == adapter.MaxKBErrorTimeout
 }
 
 func smartSplitFailureCode(err error) string {
