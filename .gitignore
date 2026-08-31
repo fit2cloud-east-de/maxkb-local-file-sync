@@ -1,0 +1,29 @@
+# Build outputs and local binaries
+build/bin
+dist
+frontend/node_modules
+frontend/dist
+/maxkb-local-file-sync
+/maxkb-sync
+/test-mineru-ping
+
+# Local application data
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.log
+
+# Local environment and signing material
+.env
+.env.*
+*.pfx
+*.p12
+*.pem
+*.key
+
+# OS/editor files
+.DS_Store
+.idea
+.vscode

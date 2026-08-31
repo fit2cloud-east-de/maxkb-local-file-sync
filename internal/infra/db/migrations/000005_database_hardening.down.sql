@@ -1,0 +1,23 @@
+DROP INDEX IF EXISTS idx_sync_runs_checkpoint;
+DROP INDEX IF EXISTS idx_file_attempts_remote_refs;
+DROP INDEX IF EXISTS idx_active_task_locks_status;
+DROP INDEX IF EXISTS idx_job_queue_task;
+DROP INDEX IF EXISTS idx_job_queue_claimable;
+DROP INDEX IF EXISTS uq_sync_files_normalized_path;
+DROP INDEX IF EXISTS uq_sync_folders_remote_binding;
+DROP INDEX IF EXISTS uq_sync_folders_normalized_local_path;
+
+ALTER TABLE file_attempts DROP COLUMN phase_timings_json;
+ALTER TABLE file_attempts DROP COLUMN document_url;
+ALTER TABLE file_attempts DROP COLUMN maxkb_document_status;
+ALTER TABLE file_attempts DROP COLUMN markdown_main_file_path;
+ALTER TABLE file_attempts DROP COLUMN mineru_mode;
+ALTER TABLE file_attempts DROP COLUMN mineru_batch_id;
+ALTER TABLE sync_runs DROP COLUMN checkpoint_data;
+ALTER TABLE sync_files DROP COLUMN normalized_relative_path;
+ALTER TABLE sync_folders DROP COLUMN knowledge_name;
+ALTER TABLE sync_folders DROP COLUMN knowledge_folder_id;
+ALTER TABLE sync_folders DROP COLUMN workspace_name;
+ALTER TABLE sync_folders DROP COLUMN normalized_maxkb_base_url;
+ALTER TABLE sync_folders DROP COLUMN maxkb_base_url_snapshot;
+ALTER TABLE sync_folders DROP COLUMN normalized_local_path;

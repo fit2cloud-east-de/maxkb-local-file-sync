@@ -1,0 +1,34 @@
+-- Add the missing run_id foreign key to active_task_locks.
+--
+-- run_id was added to the original table with ALTER TABLE in migration 2,
+-- which cannot add a foreign-key clause in SQLite. Rebuild the table so
+-- production databases upgraded from v1 receive the same referential
+-- integrity as a newly created schema.
+PRAGMA defer_foreign_keys = ON;
+
+CREATE TABLE active_task_locks_new (
+    lock_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL UNIQUE,
+    folder_id TEXT NOT NULL,
+    locked_at TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    run_status TEXT NOT NULL DEFAULT 'QUEUED',
+    heartbeat_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (task_id) REFERENCES sync_tasks(task_id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES sync_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (folder_id) REFERENCES sync_folders(folder_id) ON DELETE CASCADE
+);
+
+INSERT INTO active_task_locks_new(
+    lock_id, task_id, folder_id, locked_at, run_id, run_status, heartbeat_at
+)
+SELECT lock_id, task_id, folder_id, locked_at, run_id, run_status, heartbeat_at
+FROM active_task_locks;
+
+DROP TABLE active_task_locks;
+ALTER TABLE active_task_locks_new RENAME TO active_task_locks;
+
+CREATE INDEX idx_active_task_locks_folder ON active_task_locks(folder_id);
+CREATE UNIQUE INDEX uq_active_task_locks_run ON active_task_locks(run_id);
+CREATE UNIQUE INDEX uq_active_task_locks_folder ON active_task_locks(folder_id);
+CREATE INDEX idx_active_task_locks_status ON active_task_locks(run_status, heartbeat_at);

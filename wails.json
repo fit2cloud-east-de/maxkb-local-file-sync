@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "MaxKB 本地文件同步工具",
+  "outputfilename": "MaxKB 本地文件同步工具",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "maekblack",
+    "email": "maekblack@qq.com"
+  },
+  "info": {
+    "productName": "MaxKB 本地文件同步工具",
+    "productVersion": "1.0.0",
+    "companyName": "MaxKB",
+    "copyright": "Copyright 2026 MaxKB",
+    "comments": "用于将本地文件夹增量同步到 MaxKB 知识库的桌面工具"
+  }
+}
