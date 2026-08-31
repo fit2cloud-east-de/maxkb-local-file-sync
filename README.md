@@ -314,6 +314,7 @@ maxkb-local-file-sync/
 
 ## 相关文档
 
+- [`USER_GUIDE.md`](./USER_GUIDE.md)：日常安装、配置、同步和问题处理操作手册。
 - [`SIGNING_GUIDE.md`](./SIGNING_GUIDE.md)：Windows 和 macOS 签名、公证及发布凭据说明。
 - [`UPDATE_PLAN.md`](./UPDATE_PLAN.md)：GitHub Releases 在线更新和版本升级方案。
 - [`build/README.md`](./build/README.md)：Wails 构建资源及平台构建边界。
