@@ -129,8 +129,31 @@ func finalizeRunTx(ctx context.Context, tx *db.ImmediateTx, runID, errorSummary,
 	if err != nil {
 		return "", fmt.Errorf("complete durable run: %w", err)
 	}
-	if err := rowsAffected(res, "complete durable run", 1); err != nil {
-		return "", err
+	if affected, err := res.RowsAffected(); err != nil {
+		return "", fmt.Errorf("complete durable run rows affected: %w", err)
+	} else if affected == 0 {
+		// A reconciliation decision can arrive after the batch was explicitly
+		// stopped or cancelled. The file decision is still valid, but a terminal
+		// control state must not be overwritten by the derived SUCCESS/FAILED
+		// status. Refresh its counters and leave the terminal status untouched.
+		var currentStatus string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM sync_runs WHERE id=?`, runID).Scan(&currentStatus); err != nil {
+			return "", fmt.Errorf("complete durable run: %w", err)
+		}
+		if currentStatus != "STOPPED" && currentStatus != "CANCELLED" {
+			return "", fmt.Errorf("complete durable run: expected 1 rows affected, got %d", affected)
+		}
+		if err := execAny(tx, ctx, `UPDATE sync_runs SET success_count=?,failed_count=?,skipped_count=?,reconcile_count=?,error_summary=? WHERE id=?`, "refresh terminal run counters", success, failed, skipped, reconcile, errorSummary, runID); err != nil {
+			return "", err
+		}
+		res, err = tx.ExecContext(ctx, `UPDATE sync_tasks SET success_count=?,failed_count=?,skipped_count=?,error_message=? WHERE task_id=?`, success, failed, skipped, errorSummary, runID)
+		if err != nil {
+			return "", fmt.Errorf("refresh terminal public task: %w", err)
+		}
+		if err := rowsAffected(res, "refresh terminal public task", 1); err != nil {
+			return "", err
+		}
+		return types.RunStatus(currentStatus), nil
 	}
 	res, err = tx.ExecContext(ctx, `UPDATE sync_tasks SET run_status=?,completed_at=?,success_count=?,failed_count=?,skipped_count=?,error_message=? WHERE task_id=?`, string(status), now, success, failed, skipped, errorSummary, runID)
 	if err != nil {

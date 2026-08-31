@@ -195,6 +195,59 @@ func TestReliabilityStartAttemptAndReconcile(t *testing.T) {
 	}
 }
 
+func TestResolveReconcileMarkFailedKeepsStoppedRunTerminal(t *testing.T) {
+	ctx := context.Background()
+	database, store, task, files := reliabilityFixture(t)
+	if err := store.CreateRunPlan(ctx, task, files); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartOrResumeAttempt(ctx, files[0].RunFileID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReconcile(ctx, files[0].RunFileID, "unknown remote result"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`UPDATE sync_runs SET status='STOPPED',completed_at=? WHERE id=?`, nowText(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`UPDATE sync_tasks SET run_status='STOPPED',completed_at=? WHERE task_id=?`, nowText(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.ResolveReconcile(ctx, files[0].RunFileID, "MARK_FAILED", ""); err != nil {
+		t.Fatalf("mark failed reconciliation: %v", err)
+	}
+
+	var runStatus string
+	var failedCount int
+	if err := database.QueryRow(`SELECT status,failed_count FROM sync_runs WHERE id=?`, task.TaskID).Scan(&runStatus, &failedCount); err != nil {
+		t.Fatal(err)
+	}
+	if runStatus != "STOPPED" || failedCount != 1 {
+		t.Fatalf("durable run status=%s failed_count=%d", runStatus, failedCount)
+	}
+	var publicStatus string
+	if err := database.QueryRow(`SELECT run_status FROM sync_tasks WHERE task_id=?`, task.TaskID).Scan(&publicStatus); err != nil {
+		t.Fatal(err)
+	}
+	if publicStatus != "STOPPED" {
+		t.Fatalf("public run status=%s", publicStatus)
+	}
+	var finalStatus, attemptStatus, fileStatus string
+	if err := database.QueryRow(`SELECT final_status FROM run_files WHERE run_file_id=?`, files[0].RunFileID).Scan(&finalStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT status FROM file_attempts WHERE run_file_id=?`, files[0].RunFileID).Scan(&attemptStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT file_status FROM sync_files WHERE file_id=?`, files[0].FileID).Scan(&fileStatus); err != nil {
+		t.Fatal(err)
+	}
+	if finalStatus != "FAILED" || attemptStatus != "FAILED" || fileStatus != "RECONCILE_REQUIRED" {
+		t.Fatalf("file states final=%s attempt=%s sync_file=%s", finalStatus, attemptStatus, fileStatus)
+	}
+}
+
 func TestClaimRebuildsMissingActiveLock(t *testing.T) {
 	ctx := context.Background()
 	database, store, task, files := reliabilityFixture(t)
