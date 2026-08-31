@@ -41,4 +41,4 @@ npm run build
 
 不得在前端源码、调试输出、截图或构建产物中写入真实 API Key、Token、Cookie、用户资料或业务文件内容。已保存凭据只通过后端返回掩码值，实际凭据由 macOS Keychain 或 Windows Credential Manager 管理。
 
-更多产品、数据库、构建和真实服务契约说明见上级 [`../README.md`](../README.md) 与 [`../FINAL_AUDIT.md`](../FINAL_AUDIT.md)。
+更多产品、数据库、构建和真实服务契约说明见上级 [`../README.md`](../README.md) 与 [`../UPDATE_PLAN.md`](../UPDATE_PLAN.md)。

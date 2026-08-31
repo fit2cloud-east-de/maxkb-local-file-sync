@@ -2,7 +2,7 @@
 
 一个运行在用户电脑上的跨平台桌面客户端，用于将本地文件夹递归、增量地同步到指定的 MaxKB 知识库。客户端不依赖中心服务端，所有任务、队列、映射和日志均保存在本机 SQLite 中。
 
-> 当前项目处于持续完善和契约验证阶段。本地单元测试、MinerU 模拟协议测试与本地构建通过，不等同于已经在真实 MaxKB v2.10.4-lts、在线 MinerU 或锁定版本的内网 MinerU 服务上完成端到端验证。详见 [`FINAL_AUDIT.md`](./FINAL_AUDIT.md)。
+> 当前项目处于持续完善和契约验证阶段。本地单元测试、MinerU 模拟协议测试与本地构建通过，不等同于已经在真实 MaxKB v2.10.4-lts、在线 MinerU 或锁定版本的内网 MinerU 服务上完成端到端验证。真实环境验证项和构建边界以本文档及 [`UPDATE_PLAN.md`](./UPDATE_PLAN.md) 为准。
 
 ## 功能概览
 
@@ -56,7 +56,6 @@ maxkb-local-file-sync/
 │       ├── views/                  # 同步任务、队列、对账和设置页面
 │       └── router/                 # Vue Router 配置
 ├── build/                         # Wails 平台构建资源
-├── FINAL_AUDIT.md                 # 需求覆盖、测试和真实契约审计
 └── wails.json                     # Wails 项目配置
 ```
 
@@ -203,7 +202,7 @@ cd /Users/maekblack/VSCodeProjects/maxkb-local-file-sync/maxkb-local-file-sync
 wails build -clean
 ```
 
-产物通常位于 `build/bin/`。当前环境已成功完成 macOS Apple Silicon 的 Wails `.app` 构建，并通过 DMG 生成和元数据校验。代码签名、公证和首次启动仍需在具有对应 Apple Developer 身份的目标环境中执行。完整结果和限制见 [`FINAL_AUDIT.md`](./FINAL_AUDIT.md)。
+产物通常位于 `build/bin/`。当前环境已成功完成 macOS Apple Silicon 的 Wails `.app` 构建，并通过 DMG 生成和元数据校验。代码签名、公证和首次启动仍需在具有对应 Apple Developer 身份的目标环境中执行。构建限制和签名说明见 [`build/README.md`](./build/README.md) 与 [`SIGNING_GUIDE.md`](./SIGNING_GUIDE.md)。
 
 ### Windows
 
@@ -335,15 +334,10 @@ GOCACHE=/tmp/maxkb-go-cache go build -v .
 
 ## 真实环境验证
 
-在连接真实服务前，请准备不包含敏感业务内容的测试知识库、虚构或专用测试凭据以及可删除的测试目录。验证清单位于 [`FINAL_AUDIT.md`](./FINAL_AUDIT.md)，其中明确列出了不得猜测的 MaxKB/MinerU 字段和需要记录的实际响应。
+在连接真实服务前，请准备不包含敏感业务内容的测试知识库、虚构或专用测试凭据以及可删除的测试目录。真实环境验证需要记录 MaxKB/MinerU 的实际响应，不能用本地模拟契约测试替代。
 
 ## 相关文档
 
-- [`FINAL_AUDIT.md`](./FINAL_AUDIT.md)：本次需求覆盖审计、文档缺口、测试结果和真实环境契约清单。
-- [`GAP_ANALYSIS.md`](./GAP_ANALYSIS.md)：历史需求符合度分析；其中部分结论对应早期代码状态，请以本次审计为准。
-- [`PHASE_6_COMPLETION.md`](./PHASE_6_COMPLETION.md)：任务控制和增量同步阶段记录。
-- [`PREVIEW_FEATURE_STATUS.md`](./PREVIEW_FEATURE_STATUS.md)：文件匹配预览功能记录。
-- [`FILE_ACCESS_PERMISSION.md`](./FILE_ACCESS_PERMISSION.md)：macOS 特殊目录访问权限说明。
 - [`../DESIGN.md`](../DESIGN.md)、[`../DESIGN_V2.md`](../DESIGN_V2.md)：设计演进记录。
 
 ## 许可证
@@ -360,4 +354,4 @@ GOCACHE=/tmp/maxkb-go-cache go build -v .
 - 查询到远端成功后，客户端自动更新本地文档 ID、成功 MD5、文件状态、文件尝试和批次状态，并由前端继续轮询队列统计以刷新页面。
 - 远端未找到、状态处理中、状态未知、身份冲突或多条 `source_file_id` 匹配时，不自动重传，保留“异常处理”人工处理入口。
 
-该机制只在 MaxKB 配置已完成连接校验且凭据可从系统凭据库恢复时运行。真实 MaxKB 实例的状态字段、分页和 `meta.source_file_id` 形态仍需按 `FINAL_AUDIT.md` 的清单验证；本地模拟契约测试不等同于真实服务端到端验证。
+该机制只在 MaxKB 配置已完成连接校验且凭据可从系统凭据库恢复时运行。真实 MaxKB 实例的状态字段、分页和 `meta.source_file_id` 形态仍需在目标环境验证；本地模拟契约测试不等同于真实服务端到端验证。
