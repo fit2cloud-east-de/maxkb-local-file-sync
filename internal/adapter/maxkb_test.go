@@ -941,6 +941,60 @@ func TestMaxKBSmartSplitAcceptsWrappedParagraphsAndFillsSourceID(t *testing.T) {
 	}
 }
 
+func TestMaxKBSmartSplitUsesDedicatedLongTimeout(t *testing.T) {
+	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		writeMaxKBEnvelope(w, 200, []any{
+			map[string]any{
+				"name":           "slow.md",
+				"source_file_id": "source-slow-1",
+				"content":        []any{map[string]any{"title": "", "content": "body"}},
+			},
+		})
+	}))
+	adapter := NewMaxKBAdapter(MaxKBConfig{
+		BaseURL:      server.URL,
+		APIKey:       fakeMaxKBToken,
+		Timeout:      10 * time.Millisecond,
+		SplitTimeout: 250 * time.Millisecond,
+		MaxRetries:   1,
+	})
+	client := adapter.(*maxkbClient)
+	result, err := client.SmartSplit(context.Background(), &SmartSplitRequest{
+		WorkspaceID: "ws", KnowledgeID: "kb", File: strings.NewReader("body"),
+		FileName: "slow.md", FileSize: 4,
+	})
+	if err != nil {
+		t.Fatalf("SmartSplit() error = %v", err)
+	}
+	if result == nil || result.SourceFileID != "source-slow-1" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestMaxKBOrdinaryRequestsKeepDefaultTimeout(t *testing.T) {
+	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		writeMaxKBEnvelope(w, 200, map[string]any{
+			"version":          "v2.10.4-lts",
+			"license_is_valid": true,
+		})
+	}))
+	adapter := NewMaxKBAdapter(MaxKBConfig{
+		BaseURL:      server.URL,
+		APIKey:       fakeMaxKBToken,
+		Timeout:      10 * time.Millisecond,
+		SplitTimeout: 250 * time.Millisecond,
+		MaxRetries:   1,
+	})
+	client := adapter.(*maxkbClient)
+	_, err := client.Ping(context.Background())
+	var maxErr *MaxKBError
+	if !errors.As(err, &maxErr) || maxErr.Type != MaxKBErrorTimeout {
+		t.Fatalf("Ping() error = %v, want MaxKBErrorTimeout", err)
+	}
+}
+
 func TestMaxKBSmartSplitAcceptsV2104SingleDocumentContentShape(t *testing.T) {
 	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// MaxKB v2.10.4-lts split handlers return a list containing the

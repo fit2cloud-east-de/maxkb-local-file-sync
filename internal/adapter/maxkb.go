@@ -8,11 +8,12 @@ import (
 
 // MaxKBConfig configures the MaxKB HTTP adapter.
 type MaxKBConfig struct {
-	BaseURL     string
-	APIKey      string
-	Timeout     time.Duration
-	MaxRetries  int
-	EnableDebug bool
+	BaseURL      string
+	APIKey       string
+	Timeout      time.Duration
+	SplitTimeout time.Duration
+	MaxRetries   int
+	EnableDebug  bool
 }
 
 // MaxKBErrorType is a stable, user-facing classification for adapter failures.
