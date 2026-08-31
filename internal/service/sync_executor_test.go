@@ -103,9 +103,6 @@ func TestSmartSplitFailureCodeClassifiesIncompatibleMaxKBResponse(t *testing.T) 
 	if got := smartSplitFailureCode(business); got != "MAXKB_SPLIT_FAILED" {
 		t.Fatalf("business response code = %q", got)
 	}
-	if got := smartSplitFailureCode(&adapter.MaxKBError{Type: adapter.MaxKBErrorTimeout, Message: "request timed out"}); got != "MAXKB_SPLIT_TIMEOUT" {
-		t.Fatalf("timeout error code = %q", got)
-	}
 	if got := smartSplitFailureCode(errors.New("network failure")); got != "MAXKB_SPLIT_FAILED" {
 		t.Fatalf("generic error code = %q", got)
 	}

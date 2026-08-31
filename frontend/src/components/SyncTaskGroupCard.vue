@@ -17,7 +17,10 @@ const emit = defineEmits<{
 }>()
 
 const latest = computed(() => props.group.latest)
-const hasFailure = computed(() => props.group.failedRuns > 0 || Boolean(latest.value.errorMessage || latest.value.errorSummary))
+// Only the latest batch can produce the inline failure summary. The group-level
+// failedRuns count also includes historical batches, so using it here could show
+// "最近批次有 0 个文件处理失败" after a later successful/empty batch.
+const hasFailure = computed(() => latest.value.failedCount > 0 || Boolean(latest.value.errorMessage || latest.value.errorSummary))
 const canResume = computed(() => ['PAUSED', 'INTERRUPTED'].includes(latest.value.runStatus))
 const canRetry = computed(() => ['FAILED', 'PARTIAL_SUCCESS'].includes(latest.value.runStatus) && latest.value.failedCount > 0)
 const isBusy = computed(() => props.busyTaskId === latest.value.taskId)

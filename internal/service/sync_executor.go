@@ -688,13 +688,8 @@ func smartSplitRequiresReconcile(err error) bool {
 
 func smartSplitFailureCode(err error) string {
 	var maxErr *adapter.MaxKBError
-	if errors.As(err, &maxErr) && maxErr != nil {
-		switch maxErr.Type {
-		case adapter.MaxKBErrorTimeout:
-			return "MAXKB_SPLIT_TIMEOUT"
-		case adapter.MaxKBErrorIncompatible:
-			return "MAXKB_SPLIT_INCOMPATIBLE"
-		}
+	if errors.As(err, &maxErr) && maxErr != nil && maxErr.Type == adapter.MaxKBErrorIncompatible {
+		return "MAXKB_SPLIT_INCOMPATIBLE"
 	}
 	return "MAXKB_SPLIT_FAILED"
 }

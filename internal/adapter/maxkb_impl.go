@@ -21,10 +21,9 @@ import (
 )
 
 const (
-	defaultMaxKBPageSize     = 100
-	defaultMaxKBTimeout      = 30 * time.Second
-	defaultMaxKBSplitTimeout = 5 * time.Minute
-	defaultMaxKBRetries      = 3
+	defaultMaxKBPageSize = 100
+	defaultMaxKBTimeout  = 30 * time.Second
+	defaultMaxKBRetries  = 3
 )
 
 type maxkbClient struct {
@@ -36,9 +35,6 @@ type maxkbClient struct {
 func NewMaxKBAdapter(cfg MaxKBConfig) MaxKBAdapter {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultMaxKBTimeout
-	}
-	if cfg.SplitTimeout <= 0 {
-		cfg.SplitTimeout = defaultMaxKBSplitTimeout
 	}
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = defaultMaxKBRetries
@@ -647,10 +643,7 @@ func (c *maxkbClient) SmartSplit(ctx context.Context, req *SmartSplitRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	// Smart splitting is a synchronous MaxKB operation: the server may need
-	// to parse the uploaded file before it can send response headers. Keep its
-	// timeout separate from the 30-second timeout used by ordinary API calls.
-	resp, err := c.doMultipartWithTimeout(ctx, http.MethodPost, endpoint, req.File, req.FileName, req.FileSize, nil, c.cfg.SplitTimeout)
+	resp, err := c.doMultipart(ctx, http.MethodPost, endpoint, req.File, req.FileName, req.FileSize, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1665,10 +1658,6 @@ func multipartContentLength(boundary, fileName string, fields map[string]string,
 // non-seekable sources are attempted once because replaying them would require
 // buffering the file and violate the streaming contract.
 func (c *maxkbClient) doMultipart(ctx context.Context, method, endpoint string, file io.Reader, fileName string, fileSize int64, fields map[string]string) (*http.Response, error) {
-	return c.doMultipartWithTimeout(ctx, method, endpoint, file, fileName, fileSize, fields, c.client.Timeout)
-}
-
-func (c *maxkbClient) doMultipartWithTimeout(ctx context.Context, method, endpoint string, file io.Reader, fileName string, fileSize int64, fields map[string]string, timeout time.Duration) (*http.Response, error) {
 	if file == nil {
 		return nil, fmt.Errorf("MaxKB multipart file is nil")
 	}
@@ -1685,12 +1674,6 @@ func (c *maxkbClient) doMultipartWithTimeout(ctx context.Context, method, endpoi
 	}
 	if !replayable {
 		attempts = 1
-	}
-	requestClient := c.client
-	if timeout > 0 && timeout != c.client.Timeout {
-		clientCopy := *c.client
-		clientCopy.Timeout = timeout
-		requestClient = &clientCopy
 	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -1739,7 +1722,7 @@ func (c *maxkbClient) doMultipartWithTimeout(ctx context.Context, method, endpoi
 		if contentLength, ok := multipartContentLength(multipartWriter.Boundary(), fileName, fields, fileSize); ok {
 			request.ContentLength = contentLength
 		}
-		resp, err := requestClient.Do(request)
+		resp, err := c.client.Do(request)
 		if err != nil {
 			_ = pipeReader.Close()
 			writeErr := <-writeDone
