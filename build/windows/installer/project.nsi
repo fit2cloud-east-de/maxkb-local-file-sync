@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 
 # This installer is intentionally a single package. The user chooses the
 # installation scope at runtime instead of downloading separate machine/user
