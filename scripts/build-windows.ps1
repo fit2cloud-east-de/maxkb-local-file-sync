@@ -21,7 +21,10 @@ if ($Version -ne $configVersion) { throw "Version '$Version' does not match wail
 $Dist = Join-Path $Root "dist\windows"
 $Checksums = Join-Path $Root "dist\checksums"
 $Bin = Join-Path $Root "build\bin"
-$AppBinaryName = "MaxKB 本地文件同步工具.exe"
+$AppBinaryName = "MaxKB-Local-File-Sync.exe"
+# Keep the Windows executable filename ASCII-only. Windows PowerShell 5.1 can
+# misread UTF-8 scripts without a BOM and pass a mojibake filename to Wails.
+# The user-facing product name remains the Chinese name from wails.json.
 $WailsArchitecture = if ($Architecture -eq "x64") { "amd64" } else { "arm64" }
 $ReleasePrefix = "MaxKB-Local-File-Sync-v$Version-windows-$Architecture"
 

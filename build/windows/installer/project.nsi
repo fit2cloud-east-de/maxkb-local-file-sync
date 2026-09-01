@@ -5,7 +5,9 @@ Unicode true
 # installers.
 
 !define REQUEST_EXECUTION_LEVEL "highest"
-!define PRODUCT_EXECUTABLE "MaxKB 本地文件同步工具.exe"
+!define PRODUCT_EXECUTABLE "MaxKB-Local-File-Sync.exe"
+# Keep the installed executable name ASCII-only for Windows PowerShell and NSIS
+# compatibility. The product name shown by the installer remains localized.
 !define UNINST_KEY_NAME "MaxKBLocalFileSync"
 
 !include "wails_tools.nsh"
