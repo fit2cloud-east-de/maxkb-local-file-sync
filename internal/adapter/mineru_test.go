@@ -221,7 +221,7 @@ func TestInternalHealthAndTaskProtocol(t *testing.T) {
 	server = newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health":
-			_, _ = io.WriteString(w, `{"status":"healthy","protocol_version":"v1","max_concurrent_requests":2,"processing_window_size":4}`)
+			_, _ = io.WriteString(w, `{"status":"healthy","version":"3.4.5","protocol_version":2,"queued_tasks":0,"processing_tasks":0,"completed_tasks":2,"failed_tasks":0,"max_concurrent_requests":1,"processing_window_size":16}`)
 		case "/tasks":
 			var err error
 			taskBody, err = io.ReadAll(r.Body)
@@ -229,9 +229,9 @@ func TestInternalHealthAndTaskProtocol(t *testing.T) {
 				t.Errorf("read task: %v", err)
 			}
 			w.WriteHeader(http.StatusAccepted)
-			_, _ = io.WriteString(w, `{"task_id":"task-1","status":"pending","status_url":"`+server.URL+`/status/task-1","result_url":"`+server.URL+`/result/task-1"}`)
+			_, _ = io.WriteString(w, `{"task_id":"task-1","status":"pending","backend":"pipeline","file_names":["a"],"created_at":"2026-09-01T09:30:23.275210+00:00","started_at":null,"completed_at":null,"error":null,"status_url":"`+server.URL+`/status/task-1","result_url":"`+server.URL+`/result/task-1","queued_ahead":0,"message":"Task submitted successfully"}`)
 		case "/status/task-1":
-			_, _ = io.WriteString(w, `{"task_id":"task-1","status":"completed","result_url":"`+server.URL+`/result/task-1"}`)
+			_, _ = io.WriteString(w, `{"task_id":"task-1","status":"completed","backend":"pipeline","file_names":["a"],"created_at":"2026-09-01T09:30:23.275210+00:00","started_at":"2026-09-01T09:30:23.275676+00:00","completed_at":"2026-09-01T09:30:23.280613+00:00","error":null,"status_url":"`+server.URL+`/status/task-1","result_url":"`+server.URL+`/result/task-1","queued_ahead":0}`)
 		case "/result/task-1":
 			_, _ = io.WriteString(w, "zip-bytes")
 		default:
@@ -240,14 +240,14 @@ func TestInternalHealthAndTaskProtocol(t *testing.T) {
 	}))
 	client := newMinerUClient(MinerUConfig{BaseURL: server.URL, Mode: MinerUModeInternal, APIKey: "fake-token", MaxRetries: 1, Timeout: time.Second})
 	health, err := client.Health(context.Background())
-	if err != nil || !health.Healthy || health.ProtocolVersion != "v1" || health.MaxConcurrent != 2 || health.WindowSize != 4 {
+	if err != nil || !health.Healthy || health.Version != "3.4.5" || health.ProtocolVersion != "2" || health.MaxConcurrent != 1 || health.WindowSize != 16 || health.CompletedTasks != 2 {
 		t.Fatalf("health=%#v err=%v", health, err)
 	}
 	resp, err := client.SubmitTask(context.Background(), &SubmitTaskRequest{FileName: "a.pdf", FileContent: []byte("source")})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	if resp.TaskID != "task-1" || !bytes.Contains(taskBody, []byte("backend")) || !bytes.Contains(taskBody, []byte("response_format_zip")) {
+	if resp.TaskID != "task-1" || !bytes.Contains(taskBody, []byte(`name="files"`)) || !bytes.Contains(taskBody, []byte("pipeline")) || !bytes.Contains(taskBody, []byte("response_format_zip")) {
 		t.Fatalf("unexpected task response/body: %#v %s", resp, taskBody)
 	}
 	status, err := client.QueryTaskStatusAt(context.Background(), resp.TaskID, resp.StatusURL)
@@ -352,5 +352,15 @@ func TestPollTaskStopsOnContext(t *testing.T) {
 	_, err := client.PollTask(ctx, "t", PollOptions{Interval: time.Millisecond, Timeout: time.Second})
 	if err == nil {
 		t.Fatal("expected poll timeout")
+	}
+}
+
+func TestInternalHealthAcceptsStringProtocolVersion(t *testing.T) {
+	var response internalHealthResponse
+	if err := json.Unmarshal([]byte(`{"status":"healthy","version":"3.4.5","protocol_version":"v1"}`), &response); err != nil {
+		t.Fatalf("decode health response: %v", err)
+	}
+	if string(response.ProtocolVersion) != "v1" {
+		t.Fatalf("protocol_version=%q", response.ProtocolVersion)
 	}
 }

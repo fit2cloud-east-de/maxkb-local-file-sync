@@ -120,9 +120,14 @@ type PollOptions struct {
 
 type HealthResult struct {
 	Healthy         bool
+	Version         string
 	ProtocolVersion string
 	MaxConcurrent   int
 	WindowSize      int
+	QueuedTasks     int
+	ProcessingTasks int
+	CompletedTasks  int
+	FailedTasks     int
 }
 
 type RetryClass string

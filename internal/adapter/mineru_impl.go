@@ -164,7 +164,7 @@ func (c *mineruClient) submitInternal(ctx context.Context, req *SubmitTaskReques
 	if err != nil {
 		return nil, err
 	}
-	response, statusCode, err := c.doMultipartStream(ctx, c.internalURL("/tasks"), reader, size, fileName, internalFormFields(options, req.OutputFormat), true, "")
+	response, statusCode, err := c.doMultipartStream(ctx, c.internalURL("/tasks"), reader, size, fileName, internalFormFields(options), true, "")
 	if err != nil {
 		return nil, err
 	}
@@ -385,19 +385,25 @@ func (c *mineruClient) Health(ctx context.Context) (*HealthResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		var response struct {
-			Status                string `json:"status"`
-			ProtocolVersion       string `json:"protocol_version"`
-			MaxConcurrentRequests int    `json:"max_concurrent_requests"`
-			ProcessingWindowSize  int    `json:"processing_window_size"`
-		}
+		var response internalHealthResponse
+
 		if err := json.Unmarshal(body, &response); err != nil {
 			return nil, protocolError(statusCode, "decode internal MinerU health response", err)
 		}
 		if statusCode < 200 || statusCode >= 300 || !strings.EqualFold(response.Status, "healthy") {
 			return nil, &MinerUError{StatusCode: statusCode, Class: RetryClassNone, Message: "internal MinerU health check is not healthy"}
 		}
-		return &HealthResult{Healthy: true, ProtocolVersion: response.ProtocolVersion, MaxConcurrent: response.MaxConcurrentRequests, WindowSize: response.ProcessingWindowSize}, nil
+		return &HealthResult{
+			Healthy:         true,
+			Version:         response.Version,
+			ProtocolVersion: string(response.ProtocolVersion),
+			MaxConcurrent:   response.MaxConcurrentRequests,
+			WindowSize:      response.ProcessingWindowSize,
+			QueuedTasks:     response.QueuedTasks,
+			ProcessingTasks: response.ProcessingTasks,
+			CompletedTasks:  response.CompletedTasks,
+			FailedTasks:     response.FailedTasks,
+		}, nil
 	}
 	// The online API does not define a dedicated health endpoint. Probe the
 	// upload-url endpoint with one syntactically valid file entry, but do not
@@ -462,7 +468,7 @@ func (c *mineruClient) doMultipartStream(ctx context.Context, target string, rea
 		multipartWriter := multipart.NewWriter(pipeWriter)
 		writeDone := make(chan error, 1)
 		go func() {
-			part, err := multipartWriter.CreateFormFile("file", fileName)
+			part, err := multipartWriter.CreateFormFile("files", fileName)
 			if err == nil {
 				_, err = io.Copy(part, reader)
 			}
@@ -813,6 +819,37 @@ type onlineExtractResponse struct {
 	} `json:"data"`
 }
 
+type internalHealthResponse struct {
+	Status                string         `json:"status"`
+	Version               string         `json:"version"`
+	ProtocolVersion       stringOrNumber `json:"protocol_version"`
+	QueuedTasks           int            `json:"queued_tasks"`
+	ProcessingTasks       int            `json:"processing_tasks"`
+	CompletedTasks        int            `json:"completed_tasks"`
+	FailedTasks           int            `json:"failed_tasks"`
+	MaxConcurrentRequests int            `json:"max_concurrent_requests"`
+	ProcessingWindowSize  int            `json:"processing_window_size"`
+}
+
+// stringOrNumber accepts the protocol_version representation used by both
+// the reference contract tests ("v1") and the deployed MinerU 3.4.5 service
+// (2), while exposing a stable string to the rest of the application.
+type stringOrNumber string
+
+func (v *stringOrNumber) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*v = stringOrNumber(text)
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return fmt.Errorf("protocol_version must be a string or number: %w", err)
+	}
+	*v = stringOrNumber(number.String())
+	return nil
+}
+
 type internalTaskResponse struct {
 	TaskID       string `json:"task_id"`
 	Status       string `json:"status"`
@@ -876,7 +913,10 @@ func mergeInternalOptions(base, override InternalMinerUOptions) InternalMinerUOp
 		result.ReturnOriginalFile = override.ReturnOriginalFile
 	}
 	if result.Backend == "" {
-		result.Backend = "hybrid-engine"
+		// The deployed internal MinerU instance is CPU-only. pipeline is the
+		// documented backend for that environment and must be the safe default
+		// when no task-level override is supplied.
+		result.Backend = "pipeline"
 	}
 	if result.Effort == "" {
 		result.Effort = "medium"
@@ -907,7 +947,7 @@ func boolPtrDefault(v *bool, d bool) *bool {
 	return &d
 }
 
-func internalFormFields(o InternalMinerUOptions, outputFormat string) map[string]string {
+func internalFormFields(o InternalMinerUOptions) map[string]string {
 	fields := map[string]string{
 		"backend": o.Backend, "effort": o.Effort, "parse_method": o.ParseMethod,
 		"language": o.Language, "formula_enable": strconv.FormatBool(*o.FormulaEnable),
@@ -916,9 +956,6 @@ func internalFormFields(o InternalMinerUOptions, outputFormat string) map[string
 		"return_middle_json": strconv.FormatBool(*o.ReturnMiddleJSON), "return_model_output": strconv.FormatBool(*o.ReturnModelOutput),
 		"return_content_list": strconv.FormatBool(*o.ReturnContentList), "return_images": strconv.FormatBool(*o.ReturnImages),
 		"response_format_zip": strconv.FormatBool(*o.ResponseFormatZIP), "return_original_file": strconv.FormatBool(*o.ReturnOriginalFile),
-	}
-	if outputFormat != "" {
-		fields["output_format"] = outputFormat
 	}
 	if o.ServerURL != "" {
 		fields["server_url"] = o.ServerURL
