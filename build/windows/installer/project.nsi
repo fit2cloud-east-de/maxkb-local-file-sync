@@ -146,7 +146,7 @@ Section "install"
         WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
         WriteRegStr HKLM "${UNINST_KEY}" "QuietUninstallString" "$\"$INSTDIR\uninstall.exe$\" /S"
         ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
-        IntFmt $0 "0x%08X"
+        IntFmt $0 "0x%08X" $0
         WriteRegDWORD HKLM "${UNINST_KEY}" "EstimatedSize" "$0"
     ${Else}
         WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${INFO_COMPANYNAME}"
@@ -158,7 +158,7 @@ Section "install"
         WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
         WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" "$\"$INSTDIR\uninstall.exe$\" /S"
         ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
-        IntFmt $0 "0x%08X"
+        IntFmt $0 "0x%08X" $0
         WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
     ${EndIf}
 SectionEnd
