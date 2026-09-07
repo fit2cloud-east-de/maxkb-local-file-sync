@@ -88,7 +88,7 @@ export function StopTask(arg1:string):Promise<void>;
 
 export function TestMaxKBConnection(arg1:api.MaxKBConfigDTO):Promise<string>;
 
-export function TestMinerUConnection(arg1:api.MinerUConfigDTO):Promise<void>;
+export function TestMinerUConnection(arg1:api.MinerUConfigDTO):Promise<api.MinerUConnectionTestResultDTO>;
 
 export function UpdateFolder(arg1:string,arg2:api.CreateFolderRequest):Promise<api.FolderDTO>;
 

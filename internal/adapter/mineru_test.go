@@ -355,6 +355,25 @@ func TestPollTaskStopsOnContext(t *testing.T) {
 	}
 }
 
+func TestInternalHealthRequiresVersion(t *testing.T) {
+	client, _ := testClient(t, MinerUModeInternal, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"healthy","protocol_version":2}`)
+	}))
+
+	_, err := client.Health(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing version") {
+		t.Fatalf("expected missing-version protocol error, got %v", err)
+	}
+	var mineruErr *MinerUError
+	if !errors.As(err, &mineruErr) || mineruErr.Class != RetryClassProtocol {
+		t.Fatalf("unexpected error classification: %#v", err)
+	}
+}
+
 func TestInternalHealthAcceptsStringProtocolVersion(t *testing.T) {
 	var response internalHealthResponse
 	if err := json.Unmarshal([]byte(`{"status":"healthy","version":"3.4.5","protocol_version":"v1"}`), &response); err != nil {

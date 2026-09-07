@@ -393,6 +393,9 @@ func (c *mineruClient) Health(ctx context.Context) (*HealthResult, error) {
 		if statusCode < 200 || statusCode >= 300 || !strings.EqualFold(response.Status, "healthy") {
 			return nil, &MinerUError{StatusCode: statusCode, Class: RetryClassNone, Message: "internal MinerU health check is not healthy"}
 		}
+		if strings.TrimSpace(response.Version) == "" {
+			return nil, &MinerUError{StatusCode: statusCode, Class: RetryClassProtocol, Message: "internal MinerU health response is missing version"}
+		}
 		return &HealthResult{
 			Healthy:         true,
 			Version:         response.Version,

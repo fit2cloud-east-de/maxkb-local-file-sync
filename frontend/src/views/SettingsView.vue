@@ -105,8 +105,8 @@ function loadConfigsToForm() {
     cleanupKeepBatches: Number.isFinite(Number(artifactConfig.cleanupKeepBatches)) ? Math.max(0, Math.round(Number(artifactConfig.cleanupKeepBatches))) : 5,
     cleanupCron: typeof artifactConfig.cleanupCron === 'string' && artifactConfig.cleanupCron.trim() ? artifactConfig.cleanupCron : '0 3 * * *',
   })
-  if (!mineru.baseUrl) mineru.baseUrl = 'https://mineru.net'
   if (!mineru.mode) mineru.mode = 'online'
+  if (!mineru.baseUrl && mineru.mode === 'online') mineru.baseUrl = 'https://mineru.net'
 
   originalMaxKBApiKey.value = store.maxKBConfig.apiKey || ''
   originalMinerUApiKey.value = store.minerUConfig.apiKey || ''
@@ -158,6 +158,17 @@ async function testMaxKB() {
   } finally {
     saving.value = ''
   }
+}
+
+function onMinerUModeChange(value: string | number | boolean) {
+  const mode = String(value) === 'internal' ? 'internal' : 'online'
+  mineru.mode = mode
+  // A token and endpoint belong to one MinerU mode. Do not silently reuse
+  // credentials or an internal address when the user switches services.
+  mineru.baseUrl = mode === 'online' ? 'https://mineru.net' : ''
+  mineru.apiKey = ''
+  originalMinerUApiKey.value = ''
+  mineruApiKeyMasked.value = false
 }
 
 async function onMinerUEnabledChange(enabled: boolean) {
@@ -225,9 +236,17 @@ async function testMinerU() {
   try {
     const payload = { ...mineru }
     if (mineruApiKeyMasked.value && mineru.apiKey.startsWith('•••')) payload.apiKey = originalMinerUApiKey.value
-    await store.testMinerU(payload)
-    if (store.minerUTestResult === 'success') notifySuccess('MinerU 连接正常')
-    else notifyError(store.minerUTestResult ?? '连接失败')
+    const result = await store.testMinerU(payload)
+    if (result?.healthy) {
+      const version = result.version.trim()
+      const protocol = result.protocolVersion.trim()
+      const details = version
+        ? `，版本 ${version}${protocol ? `（协议 ${protocol}）` : ''}`
+        : ''
+      notifySuccess(`MinerU 连接正常${details}`)
+    } else {
+      notifyError(store.error ?? '连接失败')
+    }
   } catch (e: unknown) {
     notifyError(errorMessage(e, 'MinerU 连接测试失败'))
   } finally {
@@ -425,7 +444,7 @@ function onMinerUApiKeyBlur() {
                 <div class="settings-field-row">
                   <div class="settings-field-label">服务模式</div>
                   <div class="settings-field-control">
-                    <el-radio-group v-model="mineru.mode" class="mineru-mode-group" :disabled="mineruConfigDisabled">
+                    <el-radio-group v-model="mineru.mode" class="mineru-mode-group" :disabled="mineruConfigDisabled" @change="onMinerUModeChange">
                       <el-radio value="online">在线 MinerU</el-radio>
                       <el-radio value="internal">内网 MinerU</el-radio>
                     </el-radio-group>

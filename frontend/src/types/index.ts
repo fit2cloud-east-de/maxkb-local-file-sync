@@ -171,6 +171,17 @@ export interface PreviewMatchResult {
 
 export interface MaxKBConfigDTO { baseUrl: string; apiKey: string }
 export interface MinerUConfigDTO { enabled: boolean; baseUrl: string; apiKey: string; mode: string }
+export interface MinerUConnectionTestResultDTO {
+  healthy: boolean
+  version: string
+  protocolVersion: string
+  maxConcurrentRequests: number
+  processingWindowSize: number
+  queuedTasks: number
+  processingTasks: number
+  completedTasks: number
+  failedTasks: number
+}
 
 export type MinerUCleanupPolicy = 'immediate' | 'never' | 'after_duration' | 'after_days' | 'keep_batches'
 

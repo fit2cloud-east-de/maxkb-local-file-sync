@@ -364,39 +364,47 @@ func (a *Application) TestMaxKBConnection(baseURL, apiKey string) (string, error
 	a.maxkbReconciler.SetAdapter(a.maxkbAdapter)
 	return profile.Version, nil
 }
-func (a *Application) TestMinerUConnection(baseURL, apiKey, mode string) error {
+func (a *Application) TestMinerUConnection(baseURL, apiKey, mode string) (*adapter.HealthResult, error) {
+	if mode == adapter.MinerUModeOnline && strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://mineru.net"
+	}
 	normalized, err := credential.ValidateBaseURL(baseURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if mode != adapter.MinerUModeOnline && mode != adapter.MinerUModeInternal {
-		return fmt.Errorf("unsupported MinerU mode: %s", mode)
+		return nil, fmt.Errorf("unsupported MinerU mode: %s", mode)
 	}
 	if mode == adapter.MinerUModeOnline && (strings.TrimSpace(apiKey) == "" || credential.IsMasked(apiKey)) {
-		return fmt.Errorf("MinerU API key is required for online mode")
+		return nil, fmt.Errorf("MinerU API key is required for online mode")
 	}
 	client := adapter.NewMinerUAdapter(adapter.MinerUConfig{BaseURL: normalized, APIKey: apiKey, Mode: mode, MaxRetries: 1})
-	if err := client.Ping(a.ctx); err != nil {
-		return err
+	streamingClient, ok := client.(adapter.StreamingMinerUAdapter)
+	if !ok {
+		return nil, fmt.Errorf("MinerU adapter does not support health checks")
+	}
+	health, err := streamingClient.Health(a.ctx)
+	if err != nil {
+		return nil, err
 	}
 	var savedURL, savedMode string
 	if err := a.db.QueryRow(`SELECT mineru_base_url,mineru_mode FROM system_settings WHERE id=1`).Scan(&savedURL, &savedMode); err != nil {
-		return fmt.Errorf("read MinerU draft: %w", err)
+		return nil, fmt.Errorf("read MinerU draft: %w", err)
 	}
 	savedKey, err := a.credStore.Get(credential.MinerUAPIKey)
 	if err != nil {
-		return fmt.Errorf("read MinerU credential: %w", err)
+		return nil, fmt.Errorf("read MinerU credential: %w", err)
 	}
 	if savedURL != normalized || savedMode != mode || savedKey != apiKey {
-		return nil
+		return health, nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := a.db.Exec(`UPDATE system_settings SET mineru_validation_success=1,mineru_last_validated_at=?,updated_at=? WHERE id=1`, now, now); err != nil {
-		return fmt.Errorf("persist MinerU validation result: %w", err)
+		return nil, fmt.Errorf("persist MinerU validation result: %w", err)
 	}
 	a.mineruAdapter = adapter.NewMinerUAdapter(adapter.MinerUConfig{BaseURL: normalized, APIKey: apiKey, Mode: mode, MaxRetries: 3, EnableDebug: false})
 	a.syncExecutor.SetAdapters(a.maxkbAdapter, a.mineruAdapter)
-	return nil
+	return health, nil
 }
 
 // ListWorkspaces 获取 MaxKB 工作空间列表
@@ -483,6 +491,9 @@ func (a *Application) DisableMinerU() error {
 
 // ConfigureMinerU 配置 MinerU 适配器
 func (a *Application) ConfigureMinerU(baseURL, apiKey, mode string) error {
+	if mode == adapter.MinerUModeOnline && strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://mineru.net"
+	}
 	normalized, err := credential.ValidateBaseURL(baseURL)
 	if err != nil {
 		return err

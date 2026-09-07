@@ -36,6 +36,21 @@ type MinerUConfigDTO struct {
 	Enabled bool   `json:"enabled"`
 }
 
+// MinerUConnectionTestResultDTO is the non-sensitive result of a real MinerU
+// connection test. Internal MinerU values are read from /health; online MinerU
+// does not define an equivalent health endpoint, so its version is empty.
+type MinerUConnectionTestResultDTO struct {
+	Healthy               bool   `json:"healthy"`
+	Version               string `json:"version"`
+	ProtocolVersion       string `json:"protocolVersion"`
+	MaxConcurrentRequests int    `json:"maxConcurrentRequests"`
+	ProcessingWindowSize  int    `json:"processingWindowSize"`
+	QueuedTasks           int    `json:"queuedTasks"`
+	ProcessingTasks       int    `json:"processingTasks"`
+	CompletedTasks        int    `json:"completedTasks"`
+	FailedTasks           int    `json:"failedTasks"`
+}
+
 // MinerUArtifactSettingsDTO contains only non-secret system-wide result
 // retention settings. It is separate from the MinerU connection DTO so the
 // frontend cannot accidentally mix credentials with local filesystem policy.
@@ -89,6 +104,25 @@ func (api *ConfigAPI) ConfigureMinerU(config MinerUConfigDTO) error {
 			return fmt.Errorf("remove legacy MinerU credentials: %w", err)
 		}
 		return api.app.DisableMinerU()
+	}
+	// An empty token in internal mode is an explicit clear from the settings
+	// form after switching modes. A masked token still resolves to the stored
+	// credential through the normal path below.
+	if config.Mode == "internal" && strings.TrimSpace(config.APIKey) == "" {
+		oldKey, err := api.app.GetCredStore().Get(credential.MinerUAPIKey)
+		if err != nil {
+			return fmt.Errorf("read existing MinerU credential: %w", err)
+		}
+		if err := api.app.GetCredStore().Delete(credential.MinerUAPIKey); err != nil {
+			return fmt.Errorf("delete MinerU credential: %w", err)
+		}
+		if err := api.app.ConfigureMinerU(config.BaseURL, "", config.Mode); err != nil {
+			if oldKey != "" {
+				_ = api.app.GetCredStore().Set(credential.MinerUAPIKey, oldKey)
+			}
+			return err
+		}
+		return cleanupLegacyCredentials(api.app.GetCredStore(), "mineru_base_url", "mineru_mode")
 	}
 	required := config.Mode == "online"
 	key, restore, err := prepareCredential(api.app.GetCredStore(), credential.MinerUAPIKey, config.APIKey, required)
@@ -279,12 +313,37 @@ func (api *ConfigAPI) TestMaxKBConnection(config MaxKBConfigDTO) (string, error)
 }
 
 // TestMinerUConnection 测试 MinerU 连接
-func (api *ConfigAPI) TestMinerUConnection(config MinerUConfigDTO) error {
-	key, _, err := resolveCredential(api.app.GetCredStore(), credential.MinerUAPIKey, config.APIKey, config.Mode == "online")
-	if err != nil {
-		return err
+func (api *ConfigAPI) TestMinerUConnection(config MinerUConfigDTO) (*MinerUConnectionTestResultDTO, error) {
+	var key string
+	var err error
+	if config.Mode == "internal" && strings.TrimSpace(config.APIKey) == "" {
+		// Empty internal token means no gateway token was supplied. Do not
+		// resurrect a credential belonging to the previous mode.
+		key = ""
+	} else {
+		key, _, err = resolveCredential(api.app.GetCredStore(), credential.MinerUAPIKey, config.APIKey, config.Mode == "online")
+		if err != nil {
+			return nil, err
+		}
 	}
-	return api.app.TestMinerUConnection(config.BaseURL, key, config.Mode)
+	health, err := api.app.TestMinerUConnection(config.BaseURL, key, config.Mode)
+	if err != nil {
+		return nil, err
+	}
+	if health == nil {
+		return nil, fmt.Errorf("MinerU health check returned no result")
+	}
+	return &MinerUConnectionTestResultDTO{
+		Healthy:               health.Healthy,
+		Version:               health.Version,
+		ProtocolVersion:       health.ProtocolVersion,
+		MaxConcurrentRequests: health.MaxConcurrent,
+		ProcessingWindowSize:  health.WindowSize,
+		QueuedTasks:           health.QueuedTasks,
+		ProcessingTasks:       health.ProcessingTasks,
+		CompletedTasks:        health.CompletedTasks,
+		FailedTasks:           health.FailedTasks,
+	}, nil
 }
 
 func maskedIfConfigured(value string) string {

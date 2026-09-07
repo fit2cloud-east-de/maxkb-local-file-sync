@@ -6,6 +6,7 @@ import type {
   MinerUArtifactCleanupResultDTO,
   MinerUArtifactConfigDTO,
   MinerUConfigDTO,
+  MinerUConnectionTestResultDTO,
 } from '../types'
 import * as App from '../../wailsjs/go/main/App'
 
@@ -112,7 +113,7 @@ export const useConfigStore = defineStore('config', () => {
   const testingMaxKB = ref(false)
   const testingMinerU = ref(false)
   const maxKBTestResult = ref<string | null>(null)
-  const minerUTestResult = ref<string | null>(null)
+  const minerUTestResult = ref<MinerUConnectionTestResultDTO | null>(null)
 
   let loadRequestID = 0
   let artifactLoadRequestID = 0
@@ -268,22 +269,24 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  async function testMinerU(config: MinerUConfigDTO) {
+  async function testMinerU(config: MinerUConfigDTO): Promise<MinerUConnectionTestResultDTO | null> {
     const testID = ++minerUTestID
     testingMinerU.value = true
     minerUTestResult.value = null
     try {
-      await withTimeout(() => App.TestMinerUConnection(config), '测试 MinerU 连接', CONFIG_REQUEST_TIMEOUT_MS)
+      const result = await withTimeout(() => App.TestMinerUConnection(config), '测试 MinerU 连接', CONFIG_REQUEST_TIMEOUT_MS)
       if (testID === minerUTestID) {
-        minerUTestResult.value = 'success'
+        minerUTestResult.value = result
         error.value = null
       }
+      return result
     } catch (e: unknown) {
       if (testID === minerUTestID) {
         const message = errorMessage(e, 'MinerU 连接失败')
-        minerUTestResult.value = 'error:' + message
+        minerUTestResult.value = null
         error.value = message
       }
+      return null
     } finally {
       if (testID === minerUTestID) testingMinerU.value = false
     }

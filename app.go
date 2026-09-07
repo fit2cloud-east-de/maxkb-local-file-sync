@@ -385,9 +385,9 @@ func (a *App) TestMaxKBConnection(config api.MaxKBConfigDTO) (string, error) {
 	return a.configAPI.TestMaxKBConnection(config)
 }
 
-func (a *App) TestMinerUConnection(config api.MinerUConfigDTO) error {
+func (a *App) TestMinerUConnection(config api.MinerUConfigDTO) (*api.MinerUConnectionTestResultDTO, error) {
 	if err := a.requireReady(); err != nil {
-		return err
+		return nil, err
 	}
 	return a.configAPI.TestMinerUConnection(config)
 }

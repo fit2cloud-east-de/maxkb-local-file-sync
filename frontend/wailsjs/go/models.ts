@@ -346,6 +346,34 @@ export namespace api {
 	        this.enabled = source["enabled"];
 	    }
 	}
+	export class MinerUConnectionTestResultDTO {
+	    healthy: boolean;
+	    version: string;
+	    protocolVersion: string;
+	    maxConcurrentRequests: number;
+	    processingWindowSize: number;
+	    queuedTasks: number;
+	    processingTasks: number;
+	    completedTasks: number;
+	    failedTasks: number;
+
+	    static createFrom(source: any = {}) {
+	        return new MinerUConnectionTestResultDTO(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.healthy = source["healthy"];
+	        this.version = source["version"];
+	        this.protocolVersion = source["protocolVersion"];
+	        this.maxConcurrentRequests = source["maxConcurrentRequests"];
+	        this.processingWindowSize = source["processingWindowSize"];
+	        this.queuedTasks = source["queuedTasks"];
+	        this.processingTasks = source["processingTasks"];
+	        this.completedTasks = source["completedTasks"];
+	        this.failedTasks = source["failedTasks"];
+	    }
+	}
 	export class PreviewMatchRequest {
 	    localPath: string;
 	    includePatterns: string;
