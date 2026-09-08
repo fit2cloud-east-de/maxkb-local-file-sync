@@ -195,6 +195,8 @@ DMG 采用 macOS 常见的 Finder 拖拽安装方式：双击 DMG，将应用拖
 
 ### Windows EXE
 
+完整的 Windows x64 / ARM64 环境准备、依赖安装、打包、验证和常见问题处理，请参阅 [`WINDOWS_BUILD_GUIDE.md`](./WINDOWS_BUILD_GUIDE.md)。
+
 在 Windows 主机执行：
 
 ```powershell
