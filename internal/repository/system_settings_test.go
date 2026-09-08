@@ -25,6 +25,20 @@ func newSystemSettingsTestDB(t *testing.T) *db.DB {
 func TestSystemSettingsRepositoryDefaultsAndRoundTrip(t *testing.T) {
 	database := newSystemSettingsTestDB(t)
 	repo := NewSystemSettingsRepository(database)
+	behavior, err := repo.GetCloseBehavior(context.Background())
+	if err != nil {
+		t.Fatalf("get default close behavior: %v", err)
+	}
+	if behavior != CloseBehaviorTray {
+		t.Fatalf("default close behavior=%q, want %q", behavior, CloseBehaviorTray)
+	}
+	if err := repo.UpdateCloseBehavior(context.Background(), CloseBehaviorExit); err != nil {
+		t.Fatalf("update close behavior: %v", err)
+	}
+	behavior, err = repo.GetCloseBehavior(context.Background())
+	if err != nil || behavior != CloseBehaviorExit {
+		t.Fatalf("round trip close behavior=%q err=%v", behavior, err)
+	}
 
 	got, err := repo.GetMinerUArtifactSettings(context.Background())
 	if err != nil {

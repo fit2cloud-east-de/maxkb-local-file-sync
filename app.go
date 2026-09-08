@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	goRuntime "runtime"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"maxkb-local-file-sync/internal/api"
 	"maxkb-local-file-sync/internal/app"
 	"maxkb-local-file-sync/internal/infra/logger"
 	"maxkb-local-file-sync/internal/infra/platform"
+	"maxkb-local-file-sync/internal/repository"
 )
 
 // App struct
@@ -29,6 +32,8 @@ type App struct {
 	configAPI      *api.ConfigAPI
 	taskControlAPI *api.TaskControlAPI
 	startupErr     error
+	tray           trayController
+	exitRequested  atomic.Bool
 }
 
 // NewApp creates a new App application struct
@@ -98,6 +103,39 @@ func (a *App) startup(ctx context.Context) {
 		a.startupErr = errors.New("application failed to start: " + logger.SanitizeError(err))
 		return
 	}
+
+	// The tray is a convenience layer and must never prevent the sync engine
+	// from starting. Windows builds provide a real controller; other platforms
+	// use a no-op implementation.
+	a.tray = newTrayController(a.ctx)
+	if err := a.tray.Start(func() {
+		runtime.WindowShow(a.ctx)
+		runtime.WindowUnminimise(a.ctx)
+	}, func() {
+		a.exitRequested.Store(true)
+		runtime.Quit(a.ctx)
+	}); err != nil {
+		a.application.GetLogger().ErrorWithErr("Failed to start system tray", err)
+	}
+}
+
+// beforeClose is called by Wails before the native window is closed. Returning
+// true keeps the process alive and hides only the window. A tray-triggered
+// quit sets exitRequested first so it is not intercepted by this handler.
+func (a *App) beforeClose(ctx context.Context) bool {
+	if goRuntime.GOOS != "windows" || a.exitRequested.Load() || a.application == nil {
+		return false
+	}
+	behavior, err := a.application.CloseBehavior()
+	if err != nil {
+		a.application.GetLogger().ErrorWithErr("Failed to read close behavior", err)
+		return false
+	}
+	if behavior == repository.CloseBehaviorTray {
+		runtime.WindowHide(ctx)
+		return true
+	}
+	return false
 }
 
 // recordStartupError keeps Wails bindings callable when startup fails. Without
@@ -120,6 +158,9 @@ func (a *App) requireReady() error {
 
 // shutdown is called when the app is closed
 func (a *App) shutdown(ctx context.Context) {
+	if a.tray != nil {
+		a.tray.Stop()
+	}
 	if a.application != nil {
 		if err := a.application.Stop(); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to stop application: %s\n", logger.SanitizeError(err))
@@ -390,6 +431,24 @@ func (a *App) TestMinerUConnection(config api.MinerUConfigDTO) (*api.MinerUConne
 		return nil, err
 	}
 	return a.configAPI.TestMinerUConnection(config)
+}
+
+// GetPlatform returns the current operating system identifier (for example,
+// "windows" or "darwin") so the UI can expose platform-specific options.
+func (a *App) GetPlatform() string { return goRuntime.GOOS }
+
+func (a *App) GetCloseBehavior() (string, error) {
+	if err := a.requireReady(); err != nil {
+		return "", err
+	}
+	return a.application.CloseBehavior()
+}
+
+func (a *App) ConfigureCloseBehavior(behavior string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.application.ConfigureCloseBehavior(behavior)
 }
 
 func (a *App) ValidateCronExpression(expression string) error {

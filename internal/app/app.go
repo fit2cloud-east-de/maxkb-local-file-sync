@@ -280,6 +280,17 @@ func (a *Application) MinerUSettings() (ServiceSettings, error) {
 	return s, nil
 }
 
+// CloseBehavior is the Windows window-close policy.  It is kept in the
+// application layer so the Wails binding and the native tray integration do
+// not access SQLite directly.
+func (a *Application) CloseBehavior() (string, error) {
+	return a.systemSettingsRepo.GetCloseBehavior(a.ctx)
+}
+
+func (a *Application) ConfigureCloseBehavior(behavior string) error {
+	return a.systemSettingsRepo.UpdateCloseBehavior(a.ctx, behavior)
+}
+
 // MinerUArtifactSettings returns system-wide, non-secret result retention settings.
 func (a *Application) MinerUArtifactSettings() (repository.MinerUArtifactSettings, error) {
 	return a.systemSettingsRepo.GetMinerUArtifactSettings(a.ctx)

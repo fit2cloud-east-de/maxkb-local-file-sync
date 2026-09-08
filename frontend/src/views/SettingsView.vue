@@ -34,6 +34,8 @@ const maxkbApiKeyMasked = ref(false)
 const mineruApiKeyMasked = ref(false)
 const originalMaxKBApiKey = ref('')
 const originalMinerUApiKey = ref('')
+const platform = ref('')
+const closeBehavior = ref('tray')
 
 const artifactCapabilities = computed(() => store.minerUArtifactCapabilities)
 const artifactCronValidating = ref(false)
@@ -50,9 +52,35 @@ async function refreshSettingsForm() {
     await Promise.allSettled([store.loadConfigs(), store.loadMinerUArtifactConfig()])
     loadConfigsToForm()
     await loadArtifactCleanupSummary()
+    await loadCloseBehavior()
     if (store.error) notifyError(store.error)
   } catch (e: unknown) {
     notifyError(errorMessage(e, '读取系统配置失败'))
+  }
+}
+
+async function loadCloseBehavior() {
+  try {
+    platform.value = await withTimeout(() => App.GetPlatform(), '读取运行平台', 5_000)
+    if (platform.value !== 'windows') return
+    const value = await withTimeout(() => App.GetCloseBehavior(), '读取关闭行为', 5_000)
+    closeBehavior.value = value === 'exit' ? 'exit' : 'tray'
+  } catch (e: unknown) {
+    // Close behavior is an optional Windows-only preference. Do not block the
+    // rest of the settings page when an older development binding is running.
+    if (platform.value === 'windows') notifyWarning(errorMessage(e, '读取关闭行为失败'))
+  }
+}
+
+async function saveCloseBehavior() {
+  saving.value = 'close-behavior'
+  try {
+    await withTimeout(() => App.ConfigureCloseBehavior(closeBehavior.value), '保存关闭行为', 10_000)
+    notifySuccess('关闭行为已保存')
+  } catch (e: unknown) {
+    notifyError(errorMessage(e, '保存关闭行为失败'))
+  } finally {
+    saving.value = ''
   }
 }
 
@@ -132,7 +160,18 @@ async function saveMaxKB() {
     if (maxkbApiKeyMasked.value && maxkb.apiKey.startsWith('•••')) payload.apiKey = originalMaxKBApiKey.value
     else originalMaxKBApiKey.value = payload.apiKey
     await store.saveMaxKBConfig(payload)
-    notifySuccess('MaxKB 配置已保存')
+
+    // 保存后的配置仍然是草稿，后端只有在真实校验成功后才会启用
+    // MaxKB 适配器。这里自动完成一次校验，避免用户保存后进入“新建”
+    // 页面只能看到“无数据”而不知道还缺少哪一步。
+    await store.testMaxKB(payload)
+    const testResult = store.maxKBTestResult ?? ''
+    if (testResult.startsWith('success:')) {
+      notifySuccess(`MaxKB 配置已保存并校验成功 (${testResult.substring(8)})`)
+    } else {
+      const detail = testResult.startsWith('error:') ? testResult.substring(6) : '连接校验未通过'
+      notifyWarning(`MaxKB 配置已保存，但连接校验失败：${detail}。工作空间暂不可用，请修正配置后重新保存。`)
+    }
     maxkbApiKeyMasked.value = true
     maxkb.apiKey = '••••••••••••••••••••••••••••••••••••••'
   } catch (e: unknown) {
@@ -549,6 +588,31 @@ function onMinerUApiKeyBlur() {
       </el-tab-pane>
     </el-tabs>
 
+    <section v-if="platform === 'windows'" class="panel settings-panel close-behavior-panel">
+      <div class="settings-panel-header">
+        <div>
+          <h2>关闭行为</h2>
+          <p>点击窗口关闭按钮时，选择应用继续在后台运行，或直接退出应用。</p>
+        </div>
+        <Server :size="17" />
+      </div>
+      <div class="close-behavior-content">
+        <div class="settings-field-row close-behavior-row">
+          <div class="settings-field-label">关闭应用时</div>
+          <div class="settings-field-control">
+            <el-radio-group v-model="closeBehavior" class="close-behavior-group" :disabled="saving !== ''">
+              <el-radio value="tray">最小化到系统托盘</el-radio>
+              <el-radio value="exit">直接退出应用</el-radio>
+            </el-radio-group>
+            <span class="form-hint">最小化到系统托盘不会停止同步任务；可在托盘菜单中选择“退出应用”。</span>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <el-button type="primary" :loading="saving === 'close-behavior'" :disabled="saving !== '' && saving !== 'close-behavior'" @click="saveCloseBehavior"><Save :size="15" /> 保存配置</el-button>
+        </div>
+      </div>
+    </section>
+
   </div>
 </template>
 
@@ -575,6 +639,13 @@ export default { components: { CircleHelp, FileCog, FolderOpen, PlugZap, Save, S
 .settings-tabs :deep(.el-tabs__item.is-active) { color: var(--primary); font-weight: 650; }
 .settings-tabs :deep(.el-tabs__active-bar) { height: 2px; border-radius: 2px; }
 .settings-tab-panel { min-height: 300px; }
+.close-behavior-panel { margin-top: 16px; }
+.close-behavior-content { padding-top: 19px; }
+.close-behavior-row { align-items: start; }
+.close-behavior-row .settings-field-label { padding-top: 2px; }
+.close-behavior-group { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.close-behavior-group :deep(.el-radio) { margin-right: 0; color: var(--text-secondary); }
+.close-behavior-group :deep(.el-radio__label) { padding-left: 7px; font-size: 13px; }
 
 .mineru-settings-panel {
   padding: 24px 26px 26px;

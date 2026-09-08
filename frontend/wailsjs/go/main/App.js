@@ -6,6 +6,10 @@ export function CleanupMinerUArtifacts() {
   return window['go']['main']['App']['CleanupMinerUArtifacts']();
 }
 
+export function ConfigureCloseBehavior(arg1) {
+  return window['go']['main']['App']['ConfigureCloseBehavior'](arg1);
+}
+
 export function ConfigureMaxKB(arg1) {
   return window['go']['main']['App']['ConfigureMaxKB'](arg1);
 }
@@ -54,6 +58,10 @@ export function GetAppVersion() {
   return window['go']['main']['App']['GetAppVersion']();
 }
 
+export function GetCloseBehavior() {
+  return window['go']['main']['App']['GetCloseBehavior']();
+}
+
 export function GetDataDirectory() {
   return window['go']['main']['App']['GetDataDirectory']();
 }
@@ -76,6 +84,10 @@ export function GetMinerUArtifactSettings() {
 
 export function GetMinerUConfig() {
   return window['go']['main']['App']['GetMinerUConfig']();
+}
+
+export function GetPlatform() {
+  return window['go']['main']['App']['GetPlatform']();
 }
 
 export function GetQueueStats() {

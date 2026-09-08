@@ -8,6 +8,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="MaxKB 本地文件同步工具"
+SOURCE_ICON="${ROOT_DIR}/build/appicon.png"
+if [[ ! -f "${SOURCE_ICON}" ]]; then
+  echo "Icon source not found: ${SOURCE_ICON}" >&2
+  exit 1
+fi
 CONFIG_VERSION="$(python3 - <<'PYCONFIG'
 import json
 from pathlib import Path

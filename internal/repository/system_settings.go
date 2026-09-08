@@ -14,6 +14,9 @@ import (
 var ErrSystemSettingsNotFound = errors.New("system settings not found")
 
 const (
+	CloseBehaviorTray = "tray"
+	CloseBehaviorExit = "exit"
+
 	// MinerUCleanupPolicyImmediate means the downloaded MinerU ZIP is used for
 	// the current sync only and is not retained in the configured artifact root.
 	MinerUCleanupPolicyImmediate     = "immediate"
@@ -68,6 +71,8 @@ type SystemSettingsRepository interface {
 	GetMinerUArtifactSettings(ctx context.Context) (MinerUArtifactSettings, error)
 	UpdateMinerUArtifactSettings(ctx context.Context, settings MinerUArtifactSettings) error
 	RecordMinerUArtifactCleanupResult(ctx context.Context, result MinerUArtifactCleanupResult) error
+	GetCloseBehavior(ctx context.Context) (string, error)
+	UpdateCloseBehavior(ctx context.Context, behavior string) error
 }
 
 type systemSettingsRepo struct {
@@ -187,6 +192,48 @@ func (r *systemSettingsRepo) RecordMinerUArtifactCleanupResult(ctx context.Conte
 	}
 	if affected, err := updated.RowsAffected(); err != nil {
 		return fmt.Errorf("verify MinerU cleanup result update: %w", err)
+	} else if affected != 1 {
+		return ErrSystemSettingsNotFound
+	}
+	return nil
+}
+
+func (r *systemSettingsRepo) GetCloseBehavior(ctx context.Context) (string, error) {
+	if r == nil || r.db == nil {
+		return "", fmt.Errorf("system settings repository is not initialized")
+	}
+	var behavior string
+	if err := r.db.Conn().QueryRowContext(ctx, `
+		SELECT close_behavior FROM system_settings WHERE id = 1
+	`).Scan(&behavior); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrSystemSettingsNotFound
+		}
+		return "", fmt.Errorf("load close behavior: %w", err)
+	}
+	if behavior != CloseBehaviorExit && behavior != CloseBehaviorTray {
+		return CloseBehaviorTray, nil
+	}
+	return behavior, nil
+}
+
+func (r *systemSettingsRepo) UpdateCloseBehavior(ctx context.Context, behavior string) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("system settings repository is not initialized")
+	}
+	if behavior != CloseBehaviorExit && behavior != CloseBehaviorTray {
+		return fmt.Errorf("unsupported close behavior: %s", behavior)
+	}
+	result, err := r.db.Conn().ExecContext(ctx, `
+		UPDATE system_settings
+		SET close_behavior = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = 1
+	`, behavior)
+	if err != nil {
+		return fmt.Errorf("save close behavior: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("verify close behavior update: %w", err)
 	} else if affected != 1 {
 		return ErrSystemSettingsNotFound
 	}

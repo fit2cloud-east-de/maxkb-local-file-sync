@@ -62,7 +62,7 @@ func TestMigrationSourcesMatch(t *testing.T) {
 	}
 }
 
-func TestMigrationChainV1ToV10(t *testing.T) {
+func TestMigrationChainV1ToV11(t *testing.T) {
 	database, err := New(Config{DataDir: t.TempDir(), DBName: "migration.db"})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestMigrationChainV1ToV10(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 10 || dirty {
+	if version != 11 || dirty {
 		t.Fatalf("version=%d dirty=%v", version, dirty)
 	}
 
@@ -98,7 +98,7 @@ func TestMigrationChainV1ToV10(t *testing.T) {
 	for _, column := range []string{
 		"mineru_cleanup_policy", "mineru_cleanup_after_days", "mineru_cleanup_keep_batches",
 		"mineru_cleanup_cron", "mineru_last_cleanup_at", "mineru_last_cleanup_status",
-		"mineru_last_cleanup_deleted_count", "mineru_last_cleanup_error",
+		"mineru_last_cleanup_deleted_count", "mineru_last_cleanup_error", "close_behavior",
 	} {
 		var count int
 		if err := database.QueryRow("SELECT COUNT(*) FROM pragma_table_info('system_settings') WHERE name = ?", column).Scan(&count); err != nil {
@@ -174,6 +174,12 @@ func TestMigrateUpRepairsV8DatabaseMissingMinerUArtifactColumn(t *testing.T) {
 			t.Fatalf("drop simulated legacy column %s: %v", column, err)
 		}
 	}
+	// A real v8 database predates the close behavior setting as well. Remove
+	// the v11 column from this downgraded fixture so the later migration can
+	// add it exactly once instead of manufacturing an impossible half-v11 DB.
+	if _, err := database.Exec(`ALTER TABLE system_settings DROP COLUMN close_behavior`); err != nil {
+		t.Fatalf("drop simulated legacy column close_behavior: %v", err)
+	}
 	if _, err := database.Exec(`UPDATE schema_migrations SET version=8, dirty=0`); err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +192,8 @@ func TestMigrateUpRepairsV8DatabaseMissingMinerUArtifactColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 10 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v10 clean", version, dirty)
+	if version != 11 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v11 clean", version, dirty)
 	}
 
 	for _, column := range []string{
@@ -311,7 +317,7 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("initial migrate up: %v", err)
 	}
-	if err := database.MigrateDown(MigrationsFS, 6); err != nil {
+	if err := database.MigrateDown(MigrationsFS, 7); err != nil {
 		t.Fatalf("migrate down to v4: %v", err)
 	}
 	version, dirty, err := database.GetMigrationVersion()
@@ -332,8 +338,8 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 10 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v10 clean", version, dirty)
+	if version != 11 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v11 clean", version, dirty)
 	}
 
 	for _, column := range []string{"mineru_save_full_result", "mineru_result_save_dir", "mineru_cleanup_temp_results"} {

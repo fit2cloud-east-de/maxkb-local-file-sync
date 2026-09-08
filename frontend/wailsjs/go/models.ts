@@ -356,11 +356,11 @@ export namespace api {
 	    processingTasks: number;
 	    completedTasks: number;
 	    failedTasks: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MinerUConnectionTestResultDTO(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.healthy = source["healthy"];

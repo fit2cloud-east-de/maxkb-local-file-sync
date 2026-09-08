@@ -22,6 +22,9 @@ $Dist = Join-Path $Root "dist\windows"
 $Checksums = Join-Path $Root "dist\checksums"
 $Bin = Join-Path $Root "build\bin"
 $AppBinaryName = "MaxKB-Local-File-Sync.exe"
+$SourceIcon = Join-Path $Root "build\appicon.png"
+$GeneratedWindowsIcon = Join-Path $Root "build\windows\icon.ico"
+$IconGenerator = Join-Path $Root "scripts\generate-windows-icon.go"
 # Keep the Windows executable filename ASCII-only. Windows PowerShell 5.1 can
 # misread UTF-8 scripts without a BOM and pass a mojibake filename to Wails.
 # The user-facing product name remains the Chinese name from wails.json.
@@ -29,6 +32,24 @@ $WailsArchitecture = if ($Architecture -eq "x64") { "amd64" } else { "arm64" }
 $ReleasePrefix = "MaxKB-Local-File-Sync-v$Version-windows-$Architecture"
 
 New-Item -ItemType Directory -Force -Path $Dist, $Checksums | Out-Null
+
+if (-not (Test-Path $SourceIcon -PathType Leaf)) {
+    throw "Icon source not found: $SourceIcon"
+}
+if (-not (Test-Path $IconGenerator -PathType Leaf)) {
+    throw "Windows icon generator not found: $IconGenerator"
+}
+
+# Regenerate the ICO before Wails compiles the Go package. The tray code embeds
+# this file at compile time, while Wails also consumes it for the EXE and NSIS
+# installer. This keeps all Windows artifacts derived from build/appicon.png.
+Push-Location $Root
+try {
+    & go run $IconGenerator -input $SourceIcon -output $GeneratedWindowsIcon
+    if ($LASTEXITCODE -ne 0) { throw "Windows icon generation failed" }
+} finally {
+    Pop-Location
+}
 
 Push-Location $Root
 try {
