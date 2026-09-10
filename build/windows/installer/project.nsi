@@ -6,6 +6,7 @@
 
 !define REQUEST_EXECUTION_LEVEL "highest"
 !define PRODUCT_EXECUTABLE "MaxKB-Local-File-Sync.exe"
+!define PRODUCT_ICON "MaxKB-Local-File-Sync.ico"
 # Keep the installed executable name ASCII-only for Windows PowerShell and NSIS
 # compatibility. The product name shown by the installer remains localized.
 !define UNINST_KEY_NAME "MaxKBLocalFileSync"
@@ -30,6 +31,12 @@ ManifestDPIAware true
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
 !define MUI_FINISHPAGE_NOAUTOCLOSE
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_TEXT "创建桌面快捷方式"
+!define MUI_FINISHPAGE_RUN_FUNCTION CreateDesktopShortcut
+!define MUI_FINISHPAGE_SHOWREADME
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "立即启动 ${INFO_PRODUCTNAME}"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION LaunchApplication
 !define MUI_ABORTWARNING
 
 Var InstallScope
@@ -107,6 +114,19 @@ Function ScopePageLeave
     ${EndIf}
 FunctionEnd
 
+Function CreateDesktopShortcut
+    ${If} $InstallScope == "machine"
+        SetShellVarContext all
+    ${Else}
+        SetShellVarContext current
+    ${EndIf}
+    CreateShortcut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}" "" "$INSTDIR\${PRODUCT_ICON}" 0
+FunctionEnd
+
+Function LaunchApplication
+    ExecShell "open" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+FunctionEnd
+
 !insertmacro MUI_PAGE_WELCOME
 Page custom ScopePageCreate ScopePageLeave
 !insertmacro MUI_PAGE_DIRECTORY
@@ -130,9 +150,12 @@ Section "install"
     !insertmacro wails.webview2runtime
     SetOutPath $INSTDIR
     !insertmacro wails.files
+    File "/oname=${PRODUCT_ICON}" "..\icon.ico"
 
-    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
-    CreateShortcut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}" "" "$INSTDIR\${PRODUCT_ICON}" 0
+    # Remove a shortcut left by an older installer. The finish-page option
+    # recreates it only when the user keeps "创建桌面快捷方式" selected.
+    Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
 
     WriteUninstaller "$INSTDIR\uninstall.exe"
     SetRegView 64
