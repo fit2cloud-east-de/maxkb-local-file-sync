@@ -31,12 +31,11 @@ ManifestDPIAware true
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
 !define MUI_FINISHPAGE_NOAUTOCLOSE
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "创建桌面快捷方式"
-!define MUI_FINISHPAGE_RUN_FUNCTION CreateDesktopShortcut
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
+!define MUI_FINISHPAGE_RUN_TEXT "立即启动 ${INFO_PRODUCTNAME}"
 !define MUI_FINISHPAGE_SHOWREADME
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "立即启动 ${INFO_PRODUCTNAME}"
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION LaunchApplication
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "创建桌面快捷方式"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut
 !define MUI_ABORTWARNING
 
 Var InstallScope
@@ -121,10 +120,6 @@ Function CreateDesktopShortcut
         SetShellVarContext current
     ${EndIf}
     CreateShortcut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}" "" "$INSTDIR\${PRODUCT_ICON}" 0
-FunctionEnd
-
-Function LaunchApplication
-    ExecShell "open" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 FunctionEnd
 
 !insertmacro MUI_PAGE_WELCOME
