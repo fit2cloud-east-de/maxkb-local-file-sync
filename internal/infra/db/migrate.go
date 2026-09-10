@@ -495,7 +495,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
     mineru_last_cleanup_status TEXT NOT NULL DEFAULT '',
     mineru_last_cleanup_deleted_count INTEGER NOT NULL DEFAULT 0,
     mineru_last_cleanup_error TEXT NOT NULL DEFAULT '',
-    close_behavior TEXT NOT NULL DEFAULT 'tray',
+    close_behavior TEXT NOT NULL DEFAULT 'ask',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

@@ -6,7 +6,9 @@ import { ElTooltip } from 'element-plus'
 import { useFoldersStore } from './stores/folders'
 import { useTasksStore } from './stores/tasks'
 import { useConfigStore } from './stores/config'
+import { notifyError } from './utils/notify'
 import * as WailsApp from '../wailsjs/go/main/App'
+import { EventsOn } from '../wailsjs/runtime/runtime'
 
 const route = useRoute()
 const foldersStore = useFoldersStore()
@@ -19,6 +21,11 @@ const refreshLoading = ref(false)
 const wailsReconnectOverlayVisible = ref(false)
 const initializationFailures = ref<Array<{ label: string; message: string }>>([])
 const frontendRuntimeError = ref('')
+type CloseBehavior = 'exit' | 'tray'
+const closeDialogVisible = ref(false)
+const closeBehavior = ref<CloseBehavior>('exit')
+const rememberCloseBehavior = ref(false)
+const closeDecisionSubmitting = ref(false)
 let initializationRequest = 0
 let automaticRetryCount = 0
 let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -27,6 +34,7 @@ let runtimeOverlayTimer: ReturnType<typeof setInterval> | null = null
 let reconnectOverlayWasVisible = false
 let bridgeWasHealthy = false
 let isUnmounted = false
+let stopCloseRequestListener: (() => void) | null = null
 
 const currentPage = computed(() => {
   if (route.path.startsWith('/folders')) return { eyebrow: '工作区', title: route.path.includes('/files') ? '文件状态' : '同步任务' }
@@ -53,6 +61,8 @@ const requiredBridgeMethods = [
   'GetQueueStats',
   'ListTasks',
   'GetAppVersion',
+  'ResolveCloseRequest',
+  'CancelCloseRequest',
 ] as const
 
 function hasWailsBridge() {
@@ -197,6 +207,44 @@ function handleStaleBridge(event: Event) {
   reloadForStaleBridge()
 }
 
+function handleCloseRequested() {
+  if (closeDialogVisible.value) return
+  closeBehavior.value = 'exit'
+  rememberCloseBehavior.value = false
+  closeDialogVisible.value = true
+}
+
+function releaseCloseRequest() {
+  void WailsApp.CancelCloseRequest().catch((error: unknown) => {
+    notifyError(errorMessage(error, '关闭确认状态重置失败'))
+  })
+}
+
+function cancelCloseDialog() {
+  if (closeDecisionSubmitting.value) return
+  closeDialogVisible.value = false
+  releaseCloseRequest()
+}
+
+function beforeCloseDialog(done: () => void) {
+  if (closeDecisionSubmitting.value) return
+  done()
+  releaseCloseRequest()
+}
+
+async function confirmCloseDialog() {
+  if (closeDecisionSubmitting.value) return
+  closeDecisionSubmitting.value = true
+  try {
+    await WailsApp.ResolveCloseRequest(closeBehavior.value, rememberCloseBehavior.value)
+    closeDialogVisible.value = false
+  } catch (error: unknown) {
+    notifyError(errorMessage(error, '无法执行关闭操作'))
+  } finally {
+    closeDecisionSubmitting.value = false
+  }
+}
+
 function waitForWailsBridge(timeout = 3000) {
   if (hasWailsBridge()) return Promise.resolve(true)
 
@@ -307,6 +355,7 @@ onMounted(() => {
   window.addEventListener('error', handleWindowError)
   window.addEventListener('unhandledrejection', handleUnhandledRejection)
   window.addEventListener('maxkb:wails-bridge-stale', handleStaleBridge)
+  stopCloseRequestListener = EventsOn('app:close-requested', handleCloseRequested)
   startRuntimeOverlayWatch()
   void initializeApp()
 })
@@ -315,6 +364,8 @@ onUnmounted(() => {
   window.removeEventListener('error', handleWindowError)
   window.removeEventListener('unhandledrejection', handleUnhandledRejection)
   window.removeEventListener('maxkb:wails-bridge-stale', handleStaleBridge)
+  stopCloseRequestListener?.()
+  stopCloseRequestListener = null
   isUnmounted = true
   initializationRequest += 1
   if (retryTimer) {
@@ -470,10 +521,90 @@ async function refreshAll() {
       <div class="content-scroll"><RouterView v-slot="{ Component }"><component :is="Component" /></RouterView></div>
     </main>
   </div>
+
+  <el-dialog
+    v-model="closeDialogVisible"
+    class="close-confirm-dialog"
+    title="退出确认"
+    width="380px"
+    align-center
+    append-to-body
+    :close-on-click-modal="false"
+    :close-on-press-escape="!closeDecisionSubmitting"
+    :show-close="!closeDecisionSubmitting"
+    :before-close="beforeCloseDialog"
+  >
+    <div class="close-confirm-content">
+      <p>您确定要退出程序吗？</p>
+      <el-radio-group v-model="closeBehavior" class="close-behavior-options">
+        <el-radio value="exit">直接退出程序</el-radio>
+        <el-radio value="tray">最小化到系统托盘</el-radio>
+      </el-radio-group>
+      <el-checkbox v-model="rememberCloseBehavior">记住此选项</el-checkbox>
+    </div>
+    <template #footer>
+      <el-button type="primary" autofocus :loading="closeDecisionSubmitting" @click="confirmCloseDialog">确定</el-button>
+      <el-button :disabled="closeDecisionSubmitting" @click="cancelCloseDialog">取消</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 
 <style scoped>
+.close-confirm-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.close-confirm-content p {
+  margin: 0;
+  color: #303133;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.close-behavior-options {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.close-behavior-options :deep(.el-radio) {
+  height: 22px;
+  margin-right: 0;
+}
+
+:deep(.close-confirm-dialog) {
+  width: min(380px, calc(100vw - 32px)) !important;
+  border-radius: 6px;
+}
+
+:deep(.close-confirm-dialog .el-dialog__header) {
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #ebeef5;
+}
+
+:deep(.close-confirm-dialog .el-dialog__title) {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+:deep(.close-confirm-dialog .el-dialog__body) {
+  padding: 18px;
+}
+
+:deep(.close-confirm-dialog .el-dialog__footer) {
+  padding: 12px 18px 16px;
+  border-top: 1px solid #ebeef5;
+}
+
+:deep(.close-confirm-dialog .el-dialog__footer .el-button) {
+  min-width: 72px;
+}
+
 .app-notice-stack {
   position: fixed;
   top: 82px;

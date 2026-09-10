@@ -14,6 +14,7 @@ import (
 var ErrSystemSettingsNotFound = errors.New("system settings not found")
 
 const (
+	CloseBehaviorAsk  = "ask"
 	CloseBehaviorTray = "tray"
 	CloseBehaviorExit = "exit"
 
@@ -211,8 +212,8 @@ func (r *systemSettingsRepo) GetCloseBehavior(ctx context.Context) (string, erro
 		}
 		return "", fmt.Errorf("load close behavior: %w", err)
 	}
-	if behavior != CloseBehaviorExit && behavior != CloseBehaviorTray {
-		return CloseBehaviorTray, nil
+	if behavior != CloseBehaviorAsk && behavior != CloseBehaviorExit && behavior != CloseBehaviorTray {
+		return CloseBehaviorAsk, nil
 	}
 	return behavior, nil
 }
@@ -221,7 +222,7 @@ func (r *systemSettingsRepo) UpdateCloseBehavior(ctx context.Context, behavior s
 	if r == nil || r.db == nil {
 		return fmt.Errorf("system settings repository is not initialized")
 	}
-	if behavior != CloseBehaviorExit && behavior != CloseBehaviorTray {
+	if behavior != CloseBehaviorAsk && behavior != CloseBehaviorExit && behavior != CloseBehaviorTray {
 		return fmt.Errorf("unsupported close behavior: %s", behavior)
 	}
 	result, err := r.db.Conn().ExecContext(ctx, `

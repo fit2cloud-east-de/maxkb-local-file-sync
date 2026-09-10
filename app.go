@@ -13,6 +13,7 @@ import (
 	"maxkb-local-file-sync/internal/app"
 	"maxkb-local-file-sync/internal/infra/logger"
 	"maxkb-local-file-sync/internal/infra/platform"
+	"maxkb-local-file-sync/internal/repository"
 )
 
 // App struct
@@ -25,14 +26,15 @@ type App struct {
 	application *app.Application
 
 	// API 层（供前端调用）
-	folderAPI      *api.FolderAPI
-	fileAPI        *api.FileAPI
-	taskAPI        *api.TaskAPI
-	configAPI      *api.ConfigAPI
-	taskControlAPI *api.TaskControlAPI
-	startupErr     error
-	tray           trayController
-	exitRequested  atomic.Bool
+	folderAPI       *api.FolderAPI
+	fileAPI         *api.FileAPI
+	taskAPI         *api.TaskAPI
+	configAPI       *api.ConfigAPI
+	taskControlAPI  *api.TaskControlAPI
+	startupErr      error
+	tray            trayController
+	exitRequested   atomic.Bool
+	closePromptOpen atomic.Bool
 }
 
 // NewApp creates a new App application struct
@@ -119,10 +121,9 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // beforeClose is called by Wails before the native window is closed.
-// Windows asks on every close so the user can choose whether to keep the
-// synchronizer running in the tray or exit immediately. macOS does not expose
-// a tray/background mode for this app: closing the window exits the process so
-// no extra menu-bar/tray icon remains.
+// Windows asks how to close until the user remembers a choice. macOS does not
+// expose a tray/background mode for this app: closing the window exits the
+// process so no extra menu-bar/tray icon remains.
 func (a *App) beforeClose(ctx context.Context) bool {
 	if a.exitRequested.Load() {
 		return false
@@ -139,33 +140,61 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		return false
 	}
 
-	// Wails' Windows MessageDialog is backed by the native MB_YESNO dialog;
-	// custom button labels and a third button are not supported there. Make
-	// the mapping explicit in the message so the standard buttons remain
-	// understandable on both Chinese and English Windows installations.
-	choice, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
-		Type:          runtime.QuestionDialog,
-		Title:         "关闭应用",
-		Message:       "请选择关闭方式：点击“是”最小化到系统托盘，点击“否”直接退出应用。最小化到系统托盘后，同步任务和定时任务会继续运行。",
-		DefaultButton: "yes",
-	})
+	behavior, err := a.application.CloseBehavior()
 	if err != nil {
-		a.application.GetLogger().ErrorWithErr("Failed to show close dialog", err)
-		return true
+		a.application.GetLogger().ErrorWithErr("Failed to load close behavior", err)
+		behavior = repository.CloseBehaviorAsk
 	}
 
-	switch choice {
-	case "Yes":
+	switch behavior {
+	case repository.CloseBehaviorTray:
 		runtime.WindowHide(ctx)
 		return true
-	case "No":
+	case repository.CloseBehaviorExit:
 		a.exitRequested.Store(true)
 		return false
+	case repository.CloseBehaviorAsk:
+		if a.closePromptOpen.CompareAndSwap(false, true) {
+			runtime.EventsEmit(ctx, "app:close-requested")
+		}
+		return true
 	default:
-		// Treat an unexpected/closed dialog as cancel so the app is never
-		// closed without an explicit user decision.
 		return true
 	}
+}
+
+// ResolveCloseRequest applies the choice made in the frontend close dialog.
+// A choice is persisted only when the user explicitly asks to remember it.
+func (a *App) ResolveCloseRequest(behavior string, remember bool) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	if behavior != repository.CloseBehaviorExit && behavior != repository.CloseBehaviorTray {
+		return fmt.Errorf("unsupported close behavior: %s", behavior)
+	}
+
+	storedBehavior := repository.CloseBehaviorAsk
+	if remember {
+		storedBehavior = behavior
+	}
+	if err := a.application.ConfigureCloseBehavior(storedBehavior); err != nil {
+		return err
+	}
+
+	a.closePromptOpen.Store(false)
+	if behavior == repository.CloseBehaviorTray {
+		runtime.WindowHide(a.ctx)
+		return nil
+	}
+
+	a.exitRequested.Store(true)
+	runtime.Quit(a.ctx)
+	return nil
+}
+
+// CancelCloseRequest allows a later close attempt to open a fresh dialog.
+func (a *App) CancelCloseRequest() {
+	a.closePromptOpen.Store(false)
 }
 
 // recordStartupError keeps Wails bindings callable when startup fails. Without

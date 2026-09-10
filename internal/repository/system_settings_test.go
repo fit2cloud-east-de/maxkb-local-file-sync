@@ -29,8 +29,8 @@ func TestSystemSettingsRepositoryDefaultsAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get default close behavior: %v", err)
 	}
-	if behavior != CloseBehaviorTray {
-		t.Fatalf("default close behavior=%q, want %q", behavior, CloseBehaviorTray)
+	if behavior != CloseBehaviorAsk {
+		t.Fatalf("default close behavior=%q, want %q", behavior, CloseBehaviorAsk)
 	}
 	if err := repo.UpdateCloseBehavior(context.Background(), CloseBehaviorExit); err != nil {
 		t.Fatalf("update close behavior: %v", err)
@@ -38,6 +38,9 @@ func TestSystemSettingsRepositoryDefaultsAndRoundTrip(t *testing.T) {
 	behavior, err = repo.GetCloseBehavior(context.Background())
 	if err != nil || behavior != CloseBehaviorExit {
 		t.Fatalf("round trip close behavior=%q err=%v", behavior, err)
+	}
+	if err := repo.UpdateCloseBehavior(context.Background(), CloseBehaviorAsk); err != nil {
+		t.Fatalf("reset close behavior: %v", err)
 	}
 
 	got, err := repo.GetMinerUArtifactSettings(context.Background())

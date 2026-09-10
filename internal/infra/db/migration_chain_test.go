@@ -62,7 +62,7 @@ func TestMigrationSourcesMatch(t *testing.T) {
 	}
 }
 
-func TestMigrationChainV1ToV14(t *testing.T) {
+func TestMigrationChainV1ToV15(t *testing.T) {
 	database, err := New(Config{DataDir: t.TempDir(), DBName: "migration.db"})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestMigrationChainV1ToV14(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 14 || dirty {
+	if version != 15 || dirty {
 		t.Fatalf("version=%d dirty=%v", version, dirty)
 	}
 
@@ -108,6 +108,14 @@ func TestMigrationChainV1ToV14(t *testing.T) {
 		if count != 1 {
 			t.Fatalf("missing system_settings.%s", column)
 		}
+	}
+
+	var closeBehavior string
+	if err := database.QueryRow(`SELECT close_behavior FROM system_settings WHERE id = 1`).Scan(&closeBehavior); err != nil {
+		t.Fatalf("load close behavior: %v", err)
+	}
+	if closeBehavior != "ask" {
+		t.Fatalf("close behavior=%q, want ask", closeBehavior)
 	}
 
 	var runIDForeignKey int
@@ -149,6 +157,34 @@ func TestMigrationChainV1ToV14(t *testing.T) {
 	}
 }
 
+func TestCloseBehaviorPromptMigrationResetsLegacyPreference(t *testing.T) {
+	database, err := New(Config{DataDir: t.TempDir(), DBName: "close-behavior.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.MigrateUp(MigrationsFS); err != nil {
+		t.Fatalf("initial migrate up: %v", err)
+	}
+	if err := database.MigrateDown(MigrationsFS, 1); err != nil {
+		t.Fatalf("migrate down to v14: %v", err)
+	}
+	if _, err := database.Exec(`UPDATE system_settings SET close_behavior = 'exit' WHERE id = 1`); err != nil {
+		t.Fatalf("set legacy close behavior: %v", err)
+	}
+	if err := database.MigrateUp(MigrationsFS); err != nil {
+		t.Fatalf("migrate close behavior prompt: %v", err)
+	}
+
+	var behavior string
+	if err := database.QueryRow(`SELECT close_behavior FROM system_settings WHERE id = 1`).Scan(&behavior); err != nil {
+		t.Fatalf("load close behavior: %v", err)
+	}
+	if behavior != "ask" {
+		t.Fatalf("close behavior=%q, want ask", behavior)
+	}
+}
+
 func TestProcessingRouteMigrationBackfillsLatestSuccessfulAttempt(t *testing.T) {
 	database, err := New(Config{DataDir: t.TempDir(), DBName: "processing-route.db"})
 	if err != nil {
@@ -158,7 +194,7 @@ func TestProcessingRouteMigrationBackfillsLatestSuccessfulAttempt(t *testing.T) 
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("initial migrate up: %v", err)
 	}
-	if err := database.MigrateDown(MigrationsFS, 2); err != nil {
+	if err := database.MigrateDown(MigrationsFS, 3); err != nil {
 		t.Fatalf("migrate down to v12: %v", err)
 	}
 
@@ -272,8 +308,8 @@ func TestMigrateUpRepairsV8DatabaseMissingMinerUArtifactColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 14 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v14 clean", version, dirty)
+	if version != 15 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v15 clean", version, dirty)
 	}
 
 	for _, column := range []string{
@@ -397,7 +433,7 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("initial migrate up: %v", err)
 	}
-	if err := database.MigrateDown(MigrationsFS, 10); err != nil {
+	if err := database.MigrateDown(MigrationsFS, 11); err != nil {
 		t.Fatalf("migrate down to v4: %v", err)
 	}
 	version, dirty, err := database.GetMigrationVersion()
@@ -418,8 +454,8 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 14 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v14 clean", version, dirty)
+	if version != 15 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v15 clean", version, dirty)
 	}
 
 	for _, column := range []string{"mineru_save_full_result", "mineru_result_save_dir", "mineru_cleanup_temp_results"} {
