@@ -2,9 +2,12 @@ package platform
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const (
@@ -18,6 +21,7 @@ const (
 // uninstallers cannot remove the SQLite database or logs accidentally.
 type StoragePaths struct {
 	Root      string
+	Config    string
 	Data      string
 	Snapshots string
 	Logs      string
@@ -25,10 +29,9 @@ type StoragePaths struct {
 	Backups   string
 }
 
-// ResolveStoragePaths returns platform-appropriate per-user application data
-// directories. On macOS and Windows it also migrates the old ~/.maxkb-sync
-// root once, when the new root does not exist yet. Linux keeps the legacy
-// location for compatibility with existing development environments.
+// ResolveStoragePaths returns platform-appropriate application data
+// directories. Installed Windows builds use the installer-selected root;
+// development builds and other platforms retain their existing locations.
 func ResolveStoragePaths(homeDir string) (StoragePaths, error) {
 	if homeDir == "" {
 		return StoragePaths{}, errors.New("home directory is empty")
@@ -37,11 +40,25 @@ func ResolveStoragePaths(homeDir string) (StoragePaths, error) {
 	root := filepath.Join(homeDir, legacyRootName)
 	switch runtime.GOOS {
 	case "windows":
+		legacyWindowsRoot := filepath.Join(homeDir, "AppData", "Local", applicationVendor, applicationName)
 		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			root = filepath.Join(localAppData, applicationVendor, applicationName)
-		} else {
-			root = filepath.Join(homeDir, "AppData", "Local", applicationVendor, applicationName)
+			legacyWindowsRoot = filepath.Join(localAppData, applicationVendor, applicationName)
 		}
+		if executablePath, err := os.Executable(); err == nil {
+			if installRoot, ok := windowsInstallRoot(executablePath); ok {
+				paths := installedStoragePaths(installRoot)
+				for _, sourceRoot := range []string{legacyWindowsRoot, filepath.Join(homeDir, legacyRootName)} {
+					if samePath(sourceRoot, paths.Root) {
+						continue
+					}
+					if err := migrateInstalledStorage(sourceRoot, paths); err != nil {
+						return StoragePaths{}, fmt.Errorf("migrate Windows application storage: %w", err)
+					}
+				}
+				return paths, nil
+			}
+		}
+		root = legacyWindowsRoot
 	case "darwin":
 		root = filepath.Join(homeDir, "Library", "Application Support", applicationVendor, applicationName)
 	}
@@ -55,12 +72,154 @@ func ResolveStoragePaths(homeDir string) (StoragePaths, error) {
 
 	return StoragePaths{
 		Root:      root,
+		Config:    filepath.Join(root, "config"),
 		Data:      filepath.Join(root, "data"),
 		Snapshots: filepath.Join(root, "snapshots"),
 		Logs:      filepath.Join(root, "logs"),
 		Temp:      filepath.Join(root, "temp"),
 		Backups:   filepath.Join(root, "backups"),
 	}, nil
+}
+
+func windowsInstallRoot(executablePath string) (string, bool) {
+	appDir := filepath.Dir(filepath.Clean(executablePath))
+	if !strings.EqualFold(filepath.Base(appDir), "app") {
+		return "", false
+	}
+	root := filepath.Dir(appDir)
+	if root == appDir {
+		return "", false
+	}
+	return root, true
+}
+
+func installedStoragePaths(root string) StoragePaths {
+	dataDir := filepath.Join(root, "data")
+	return StoragePaths{
+		Root:      root,
+		Config:    filepath.Join(root, "config"),
+		Data:      dataDir,
+		Snapshots: filepath.Join(dataDir, "snapshots"),
+		Logs:      filepath.Join(root, "logs"),
+		Temp:      filepath.Join(dataDir, "temp"),
+		Backups:   filepath.Join(dataDir, "backups"),
+	}
+}
+
+func migrateInstalledStorage(sourceRoot string, destination StoragePaths) error {
+	sourceInfo, err := os.Stat(sourceRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !sourceInfo.IsDir() {
+		return errors.New("legacy application storage path is not a directory")
+	}
+
+	mappings := [][2]string{
+		{filepath.Join(sourceRoot, "config"), destination.Config},
+		{filepath.Join(sourceRoot, "data"), destination.Data},
+		{filepath.Join(sourceRoot, "snapshots"), destination.Snapshots},
+		{filepath.Join(sourceRoot, "logs"), destination.Logs},
+		{filepath.Join(sourceRoot, "temp"), destination.Temp},
+		{filepath.Join(sourceRoot, "backups"), destination.Backups},
+	}
+	for _, mapping := range mappings {
+		if err := mergeStoragePath(mapping[0], mapping[1]); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(sourceRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Unknown or conflicting legacy files remain in place for manual recovery.
+		return nil
+	}
+	return nil
+}
+
+func mergeStoragePath(source, target string) error {
+	sourceInfo, err := os.Lstat(source)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	targetInfo, targetErr := os.Lstat(target)
+	if errors.Is(targetErr, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(source, target); err == nil {
+			return nil
+		}
+		return copyStoragePath(source, target, sourceInfo)
+	}
+	if targetErr != nil {
+		return targetErr
+	}
+	if !sourceInfo.IsDir() || !targetInfo.IsDir() {
+		// Keep both sides intact when an existing destination conflicts.
+		return nil
+	}
+
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := mergeStoragePath(filepath.Join(source, entry.Name()), filepath.Join(target, entry.Name())); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(source); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return nil
+}
+
+func copyStoragePath(source, target string, sourceInfo os.FileInfo) error {
+	if sourceInfo.IsDir() {
+		if err := os.Mkdir(target, sourceInfo.Mode().Perm()); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		entries, err := os.ReadDir(source)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := mergeStoragePath(filepath.Join(source, entry.Name()), filepath.Join(target, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return os.Remove(source)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("unsupported legacy storage entry: %s", source)
+	}
+
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, sourceInfo.Mode().Perm())
+	if err != nil {
+		_ = input.Close()
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := errors.Join(input.Close(), output.Close())
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(target)
+		return errors.Join(copyErr, closeErr)
+	}
+	return os.Remove(source)
+}
+
+func samePath(left, right string) bool {
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
 }
 
 func migrateLegacyRoot(legacyRoot, root string) error {

@@ -213,7 +213,7 @@ DMG 采用 macOS 常见的 Finder 拖拽安装方式：双击 DMG，将应用拖
 - 所有用户安装；
 - 自定义安装目录。
 
-安装目录与用户数据目录分离。升级或卸载应用时，不会默认删除任务、映射、日志、SQLite 数据和系统凭据。
+Windows 安装目录采用 `app/config/logs/data` 布局：程序文件只放在 `app`，安装器按安装范围为 `config/logs/data` 设置写权限。仅当前用户安装不触发 UAC；所有用户安装只在复制文件和设置 ACL 时触发一次 UAC。开始菜单、桌面快捷方式和安装完成页始终以普通权限启动应用。升级或卸载不会默认删除 `config/logs/data`、任务、映射、日志、SQLite 数据和系统凭据。
 
 Windows 点击窗口关闭按钮时，会显示“退出确认”，可选择直接退出或最小化到系统托盘。勾选“记住此选项”后，后续关闭将直接执行所选行为；未勾选则下次继续询问。最小化到托盘后，同步和定时任务会继续运行，可通过托盘菜单恢复窗口或退出应用。macOS 关闭窗口即退出应用，不保留本应用的菜单栏图标。
 
@@ -241,21 +241,24 @@ Windows 安装包签名示例：
 
 ## 数据目录
 
-应用程序文件和用户数据分开保存。默认数据目录为：
+Windows 正式安装后，应用使用安装向导中选择的目录；macOS 和 Windows 开发模式仍使用平台用户数据目录：
 
 ```text
-Windows: %LOCALAPPDATA%\MaxKB\MaxKB 本地文件同步工具
-macOS:   ~/Library/Application Support/MaxKB/MaxKB 本地文件同步工具
+Windows 安装版: <安装目录>
+Windows 开发版: %LOCALAPPDATA%\MaxKB\MaxKB 本地文件同步工具
+macOS:          ~/Library/Application Support/MaxKB/MaxKB 本地文件同步工具
 ```
 
-数据目录通常包含：
+Windows 安装目录包含：
 
 ```text
-data/       SQLite 数据库
-snapshots/  文件扫描快照
-logs/       应用日志
-temp/       临时文件
-backups/    数据库备份
+app/             程序和图标，不存运行数据
+config/          应用配置目录
+logs/            应用日志
+data/            SQLite 数据库
+data/snapshots/  文件扫描快照
+data/temp/       临时文件
+data/backups/    数据库备份
 ```
 
 应用启动时会执行版本化 SQLite 迁移。迁移失败时应停止启动并保留原数据库，不应通过删除数据库或跳过迁移来恢复。

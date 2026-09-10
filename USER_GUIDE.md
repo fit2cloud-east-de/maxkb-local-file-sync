@@ -29,7 +29,14 @@ macOS 安装包：
 4. 按照安装向导完成安装。
 5. 从开始菜单或桌面快捷方式启动应用。
 
-选择“所有用户安装”时，Windows 可能会弹出 UAC 权限确认窗口。
+安装目录中会创建 `app`、`config`、`logs` 和 `data`。程序文件位于 `app`；安装器会为当前安装范围设置 `config/logs/data` 写权限。
+
+| 安装范围 | 安装时 UAC | 启动应用时 UAC | 数据权限 |
+| --- | ---: | ---: | --- |
+| 仅当前用户 | 不需要 | 不需要 | 当前用户可以写入 `config/logs/data` |
+| 所有用户 | 需要 | 不需要 | 本机普通用户可以写入 `config/logs/data` |
+
+所有用户模式只在开始安装时弹出 UAC。安装完成页、开始菜单和桌面快捷方式启动应用时都使用普通权限。
 
 ### 关闭应用与系统托盘
 
@@ -190,8 +197,9 @@ MaxKB 已经返回文档记录后，客户端会继续通过异步查询获取�
 应用日志默认保存在以下目录：
 
 ```text
-Windows: %LOCALAPPDATA%\MaxKB\MaxKB 本地文件同步工具\logs
-macOS:   ~/Library/Application Support/MaxKB/MaxKB 本地文件同步工具/logs
+Windows 安装版: <安装目录>\logs
+Windows 开发版: %LOCALAPPDATA%\MaxKB\MaxKB 本地文件同步工具\logs
+macOS:          ~/Library/Application Support/MaxKB/MaxKB 本地文件同步工具/logs
 ```
 
 日志中会记录请求阶段、HTTP 状态、批次 ID、文件 ID 和脱敏后的错误信息，不会记录完整 API Key、Token、Cookie 或预签名 URL。
@@ -243,4 +251,4 @@ macOS:   ~/Library/Application Support/MaxKB/MaxKB 本地文件同步工具/logs
 - API Key 和 Token 通过系统凭据库保存。
 - 系统凭据库不可用时不会降级为明文保存。
 - SQLite、日志和导出文件中不保存完整凭据。
-- 卸载应用不会默认删除用户数据；如需彻底清理，请先在应用中确认删除任务和凭据，再按系统数据目录进行备份或清理。
+- 卸载应用不会默认删除 Windows 安装目录中的 `config/logs/data` 或其他平台的用户数据；如需彻底清理，请先在应用中确认删除任务和凭据，再备份或清理对应目录。

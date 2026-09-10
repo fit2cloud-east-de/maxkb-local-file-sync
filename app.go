@@ -64,7 +64,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// 确保目录存在；失败时只输出脱敏后的诊断信息，避免把本地路径
 	// 或底层错误中的其他敏感字段直接写入控制台。
-	for _, dir := range []string{storage.Data, storage.Snapshots, storage.Logs, storage.Temp, storage.Backups} {
+	for _, dir := range []string{storage.Config, storage.Data, storage.Snapshots, storage.Logs, storage.Temp, storage.Backups} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			a.recordStartupError("failed to prepare application storage", err)
 			return
