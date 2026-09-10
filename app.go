@@ -13,7 +13,6 @@ import (
 	"maxkb-local-file-sync/internal/app"
 	"maxkb-local-file-sync/internal/infra/logger"
 	"maxkb-local-file-sync/internal/infra/platform"
-	"maxkb-local-file-sync/internal/repository"
 )
 
 // App struct
@@ -119,23 +118,54 @@ func (a *App) startup(ctx context.Context) {
 	}
 }
 
-// beforeClose is called by Wails before the native window is closed. Returning
-// true keeps the process alive and hides only the window. A tray-triggered
-// quit sets exitRequested first so it is not intercepted by this handler.
+// beforeClose is called by Wails before the native window is closed.
+// Windows asks on every close so the user can choose whether to keep the
+// synchronizer running in the tray or exit immediately. macOS does not expose
+// a tray/background mode for this app: closing the window exits the process so
+// no extra menu-bar/tray icon remains.
 func (a *App) beforeClose(ctx context.Context) bool {
-	if goRuntime.GOOS != "windows" || a.exitRequested.Load() || a.application == nil {
+	if a.exitRequested.Load() {
 		return false
 	}
-	behavior, err := a.application.CloseBehavior()
+
+	if goRuntime.GOOS == "darwin" {
+		// macOS has no background/tray mode for this app. Returning false lets
+		// Wails complete the native close and terminate the process normally.
+		a.exitRequested.Store(true)
+		return false
+	}
+
+	if goRuntime.GOOS != "windows" || a.application == nil {
+		return false
+	}
+
+	// Wails' Windows MessageDialog is backed by the native MB_YESNO dialog;
+	// custom button labels and a third button are not supported there. Make
+	// the mapping explicit in the message so the standard buttons remain
+	// understandable on both Chinese and English Windows installations.
+	choice, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
+		Type:          runtime.QuestionDialog,
+		Title:         "关闭应用",
+		Message:       "请选择关闭方式：点击“是”最小化到系统托盘，点击“否”直接退出应用。最小化到系统托盘后，同步任务和定时任务会继续运行。",
+		DefaultButton: "yes",
+	})
 	if err != nil {
-		a.application.GetLogger().ErrorWithErr("Failed to read close behavior", err)
-		return false
-	}
-	if behavior == repository.CloseBehaviorTray {
-		runtime.WindowHide(ctx)
+		a.application.GetLogger().ErrorWithErr("Failed to show close dialog", err)
 		return true
 	}
-	return false
+
+	switch choice {
+	case "Yes":
+		runtime.WindowHide(ctx)
+		return true
+	case "No":
+		a.exitRequested.Store(true)
+		return false
+	default:
+		// Treat an unexpected/closed dialog as cancel so the app is never
+		// closed without an explicit user decision.
+		return true
+	}
 }
 
 // recordStartupError keeps Wails bindings callable when startup fails. Without
@@ -173,7 +203,7 @@ func (a *App) loadStoredConfig() {
 	// 加载 MaxKB 配置
 	maxkbConfig, err := a.configAPI.GetMaxKBConfig()
 	if err == nil && maxkbConfig.BaseURL != "" {
-		if err := a.application.ConfigureMaxKB(maxkbConfig.BaseURL, maxkbConfig.APIKey); err != nil {
+		if err := a.application.ConfigureMaxKB(maxkbConfig.BaseURL, maxkbConfig.APIKey, maxkbConfig.TimeoutSeconds); err != nil {
 			a.application.GetLogger().ErrorWithErr("Failed to configure MaxKB from stored config", err)
 		}
 	}
@@ -434,22 +464,8 @@ func (a *App) TestMinerUConnection(config api.MinerUConfigDTO) (*api.MinerUConne
 }
 
 // GetPlatform returns the current operating system identifier (for example,
-// "windows" or "darwin") so the UI can expose platform-specific options.
+// "windows" or "darwin") for platform-specific runtime behavior.
 func (a *App) GetPlatform() string { return goRuntime.GOOS }
-
-func (a *App) GetCloseBehavior() (string, error) {
-	if err := a.requireReady(); err != nil {
-		return "", err
-	}
-	return a.application.CloseBehavior()
-}
-
-func (a *App) ConfigureCloseBehavior(behavior string) error {
-	if err := a.requireReady(); err != nil {
-		return err
-	}
-	return a.application.ConfigureCloseBehavior(behavior)
-}
 
 func (a *App) ValidateCronExpression(expression string) error {
 	if err := a.requireReady(); err != nil {

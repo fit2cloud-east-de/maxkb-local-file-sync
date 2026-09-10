@@ -122,15 +122,17 @@ func TestMaxKBReconcilerConfirmsAggregateSuccess(t *testing.T) {
 	}
 }
 
-func TestMaxKBReconcilerWaitsForUnknownOrMissingRemoteDocument(t *testing.T) {
+func TestMaxKBReconcilerConfirmsDocumentCreationRegardlessOfIndexStatus(t *testing.T) {
 	tests := []struct {
 		name      string
 		documents []*adapter.Document
+		want      []string
 	}{
-		{name: "missing"},
-		{name: "pending", documents: []*adapter.Document{{ID: "doc-1", SourceFileID: "source-1", StatusMapped: adapter.MaxKBDocStatusPending}}},
-		{name: "unknown", documents: []*adapter.Document{{ID: "doc-1", SourceFileID: "source-1", StatusMapped: adapter.MaxKBDocStatusUnknown}}},
-		{name: "failed", documents: []*adapter.Document{{ID: "doc-1", SourceFileID: "source-1", StatusMapped: adapter.MaxKBDocStatusFailed}}},
+		{name: "missing", want: nil},
+		{name: "pending", documents: []*adapter.Document{{ID: "doc-1", SourceFileID: "source-1", StatusMapped: adapter.MaxKBDocStatusPending}}, want: []string{"run-file-1|REMOTE_SUCCEEDED|doc-1"}},
+		{name: "processing", documents: []*adapter.Document{{ID: "doc-1", SourceFileID: "source-1", StatusMapped: adapter.MaxKBDocStatusProcessing}}, want: []string{"run-file-1|REMOTE_SUCCEEDED|doc-1"}},
+		{name: "unknown", documents: []*adapter.Document{{ID: "doc-1", SourceFileID: "source-1", StatusMapped: adapter.MaxKBDocStatusUnknown}}, want: []string{"run-file-1|REMOTE_SUCCEEDED|doc-1"}},
+		{name: "failed indexing", documents: []*adapter.Document{{ID: "doc-1", SourceFileID: "source-1", StatusMapped: adapter.MaxKBDocStatusFailed}}, want: []string{"run-file-1|REMOTE_SUCCEEDED|doc-1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -145,8 +147,14 @@ func TestMaxKBReconcilerWaitsForUnknownOrMissingRemoteDocument(t *testing.T) {
 
 			reconciler.RunNow(context.Background())
 
-			if got := store.resolvedCalls(); len(got) != 0 {
-				t.Fatalf("resolved calls = %v, want none", got)
+			got := store.resolvedCalls()
+			if len(got) != len(tt.want) {
+				t.Fatalf("resolved calls = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("resolved calls = %v, want %v", got, tt.want)
+				}
 			}
 		})
 	}

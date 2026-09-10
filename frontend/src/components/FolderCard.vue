@@ -3,7 +3,7 @@ import { CalendarClock, Database, FileText, FolderOpen, MoreHorizontal, Pencil, 
 import { ElMessageBox, ElSwitch, ElTag, ElTooltip } from 'element-plus'
 import type { FolderDTO } from '../types'
 
-const props = defineProps<{ folder: FolderDTO; busy?: boolean }>()
+const props = defineProps<{ folder: FolderDTO; busy?: boolean; processing?: boolean }>()
 const emit = defineEmits<{ (e: 'sync', folderId: string): void; (e: 'files', folderId: string): void; (e: 'edit', folderId: string): void; (e: 'delete', folderId: string): void; (e: 'toggle-enabled', folderId: string, currentEnabled: boolean): void }>()
 function formatNextExecution(value?: string) { if (!value) return '未设置'; const date = new Date(value); return Number.isNaN(date.getTime()) ? '未设置' : date.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
 async function confirmDelete() { try { await ElMessageBox.confirm('只删除客户端本地任务、队列、映射和日志，不会删除 MaxKB 中的文档。', '删除同步任务', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }); emit('delete', props.folder.folderId) } catch { /* cancelled */ } }
@@ -33,6 +33,6 @@ async function confirmDelete() { try { await ElMessageBox.confirm('只删除客�
         <strong v-else class="destination-value">未配置</strong>
       </div>
     </div>
-    <div class="task-config-footer"><div class="schedule"><CalendarClock :size="15" /><span>{{ folder.cronEnabled ? folder.cronExpression : '手动执行' }}</span><small v-if="folder.cronEnabled">下次 {{ formatNextExecution(folder.nextExecutionAt) }}</small></div><el-tag v-if="folder.enableMinerU" size="small" effect="plain" type="warning">MinerU</el-tag><div class="card-footer-actions"><el-tooltip content="立即扫描并同步"><el-button type="primary" plain size="small" :loading="busy" :disabled="!folder.enabled" @click="emit('sync', folder.folderId)"><Play :size="14" /> 立即同步</el-button></el-tooltip><el-button text size="small" @click="emit('files', folder.folderId)"><FileText :size="14" /> 文件状态</el-button></div></div>
+    <div class="task-config-footer"><div class="schedule"><CalendarClock :size="15" /><span>{{ folder.cronEnabled ? folder.cronExpression : '手动执行' }}</span><small v-if="folder.cronEnabled">下次 {{ formatNextExecution(folder.nextExecutionAt) }}</small></div><el-tag v-if="folder.enableMinerU" size="small" effect="plain" type="warning">MinerU</el-tag><div class="card-footer-actions"><el-tooltip :content="processing ? '当前同步任务正在处理中' : '立即扫描并同步'"><el-button type="primary" plain size="small" :loading="busy && !processing" :disabled="!folder.enabled || processing || busy" @click="emit('sync', folder.folderId)"><Play v-if="!processing" :size="14" /> {{ processing ? '处理中' : '立即同步' }}</el-button></el-tooltip><el-button text size="small" @click="emit('files', folder.folderId)"><FileText :size="14" /> 文件状态</el-button></div></div>
   </article>
 </template>

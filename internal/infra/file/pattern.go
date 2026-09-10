@@ -187,6 +187,10 @@ func ParseExtensions(extensions string) []string {
 		if ext == "" {
 			continue
 		}
+		if ext == "*" {
+			result = append(result, ext)
+			continue
+		}
 
 		// 确保扩展名有前导 .
 		if !strings.HasPrefix(ext, ".") {

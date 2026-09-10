@@ -24,8 +24,9 @@ func NewConfigAPI(app *app.Application) *ConfigAPI {
 
 // MaxKBConfig MaxKB 配置
 type MaxKBConfigDTO struct {
-	BaseURL string `json:"baseUrl"`
-	APIKey  string `json:"apiKey"`
+	BaseURL        string `json:"baseUrl"`
+	APIKey         string `json:"apiKey"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
 }
 
 // MinerUConfig MinerU 配置
@@ -79,11 +80,12 @@ type MinerUArtifactSettingsDTO struct {
 
 // ConfigureMaxKB 配置 MaxKB
 func (api *ConfigAPI) ConfigureMaxKB(config MaxKBConfigDTO) error {
+	timeoutSeconds := normalizeMaxKBTimeoutSeconds(config.TimeoutSeconds)
 	key, restore, err := prepareCredential(api.app.GetCredStore(), credential.MaxKBAPIKey, config.APIKey, true)
 	if err != nil {
 		return err
 	}
-	if err := api.app.ConfigureMaxKB(config.BaseURL, key); err != nil {
+	if err := api.app.ConfigureMaxKB(config.BaseURL, key, timeoutSeconds); err != nil {
 		_ = restore()
 		return err
 	}
@@ -91,6 +93,16 @@ func (api *ConfigAPI) ConfigureMaxKB(config MaxKBConfigDTO) error {
 		return fmt.Errorf("remove legacy MaxKB URL credential: %w", err)
 	}
 	return nil
+}
+
+func normalizeMaxKBTimeoutSeconds(seconds int) int {
+	if seconds < adapter.MinMaxKBTimeoutSeconds {
+		return adapter.MinMaxKBTimeoutSeconds
+	}
+	if seconds > adapter.MaxMaxKBTimeoutSeconds {
+		return adapter.MaxMaxKBTimeoutSeconds
+	}
+	return seconds
 }
 
 // ConfigureMinerU 配置 MinerU
@@ -150,8 +162,9 @@ func (api *ConfigAPI) GetMaxKBConfig() (*MaxKBConfigDTO, error) {
 		return nil, fmt.Errorf("read MaxKB credential: %w", err)
 	}
 	return &MaxKBConfigDTO{
-		BaseURL: settings.BaseURL,
-		APIKey:  maskedIfConfigured(apiKey),
+		BaseURL:        settings.BaseURL,
+		APIKey:         maskedIfConfigured(apiKey),
+		TimeoutSeconds: normalizeMaxKBTimeoutSeconds(settings.MaxKBTimeoutSeconds),
 	}, nil
 }
 
@@ -309,7 +322,7 @@ func (api *ConfigAPI) TestMaxKBConnection(config MaxKBConfigDTO) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return api.app.TestMaxKBConnection(config.BaseURL, key)
+	return api.app.TestMaxKBConnection(config.BaseURL, key, normalizeMaxKBTimeoutSeconds(config.TimeoutSeconds))
 }
 
 // TestMinerUConnection 测试 MinerU 连接

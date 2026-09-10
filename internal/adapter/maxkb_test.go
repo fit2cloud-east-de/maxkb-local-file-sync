@@ -370,11 +370,17 @@ func TestMaxKBOSSAndSmartSplitKeepSourceFileIDDistinct(t *testing.T) {
 			writeMaxKBEnvelope(w, 200, map[string]any{"file_id": "source-1", "url": "./oss/file/source-1"})
 		case "/admin/api/workspace/ws/knowledge/kb/document/split":
 			atomic.AddInt32(&splitCalls, 1)
+			if got := r.URL.Query().Get("with_filter"); got != "" {
+				t.Fatalf("split with_filter query=%q, want omitted", got)
+			}
 			if r.ContentLength <= 0 || len(r.TransferEncoding) != 0 {
 				t.Fatalf("split request must use a fixed content length: content_length=%d transfer_encoding=%v", r.ContentLength, r.TransferEncoding)
 			}
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				t.Fatal(err)
+			}
+			if got := r.FormValue("with_filter"); got != "" {
+				t.Fatalf("split multipart with_filter=%q, want omitted", got)
 			}
 			file, header, err := r.FormFile("file")
 			if err != nil {
@@ -385,7 +391,11 @@ func TestMaxKBOSSAndSmartSplitKeepSourceFileIDDistinct(t *testing.T) {
 			if header.Filename != "source.md" || string(content) != "split-content" {
 				t.Fatalf("split file=%q content=%q", header.Filename, content)
 			}
-			writeMaxKBEnvelope(w, 200, []any{map[string]any{"title": "Title", "content": "Body", "source_file_id": "source-2"}})
+			writeMaxKBEnvelope(w, 200, []any{map[string]any{
+				"title":          "Title",
+				"content":        "Body\n\n![](./oss/file/image-1)",
+				"source_file_id": "source-2",
+			}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -399,7 +409,7 @@ func TestMaxKBOSSAndSmartSplitKeepSourceFileIDDistinct(t *testing.T) {
 		t.Fatalf("source file was exposed as document ID: %q", got)
 	}
 	split, err := client.SmartSplit(context.Background(), &SmartSplitRequest{WorkspaceID: "ws", KnowledgeID: "kb", File: strings.NewReader("split-content"), FileName: "source.md", FileSize: 13})
-	if err != nil || split.SourceFileID != "source-2" || len(split.Paragraphs) != 1 || split.Paragraphs[0].Content != "Body" {
+	if err != nil || split.SourceFileID != "source-2" || len(split.Paragraphs) != 1 || split.Paragraphs[0].Content != "Body\n\n![](./oss/file/image-1)" {
 		t.Fatalf("split=%#v err=%v", split, err)
 	}
 	if ossCalls != 1 || splitCalls != 1 {
@@ -414,15 +424,29 @@ func TestMaxKBBatchCreateParsesMaxKBResponseAndPreservesPayload(t *testing.T) {
 		}
 		assertMaxKBHeaders(t, r, true)
 		var payload []struct {
-			Name         string      `json:"name"`
-			SourceFileID string      `json:"source_file_id"`
-			Paragraphs   []Paragraph `json:"paragraphs"`
+			Name         string `json:"name"`
+			SourceFileID string `json:"source_file_id"`
+			Paragraphs   []struct {
+				Title       string `json:"title"`
+				Content     string `json:"content"`
+				IsActive    bool   `json:"is_active"`
+				ProblemList []struct {
+					Content string `json:"content"`
+				} `json:"problem_list"`
+			} `json:"paragraphs"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if len(payload) != 1 || payload[0].Name != "doc.md" || payload[0].SourceFileID != "source-1" || len(payload[0].Paragraphs) != 1 || payload[0].Paragraphs[0].Content != "body" {
+		if len(payload) != 1 || payload[0].Name != "doc.md" || payload[0].SourceFileID != "source-1" || len(payload[0].Paragraphs) != 1 {
 			t.Fatalf("payload=%#v", payload)
+		}
+		paragraph := payload[0].Paragraphs[0]
+		if paragraph.Title != "title" || paragraph.Content != "body\n\n![](./oss/file/image-1)" || !paragraph.IsActive {
+			t.Fatalf("paragraph=%#v", paragraph)
+		}
+		if len(paragraph.ProblemList) != 1 || paragraph.ProblemList[0].Content != "title" {
+			t.Fatalf("problem_list=%#v", paragraph.ProblemList)
 		}
 		// MaxKB v2.10.4-lts serializes batch_save's tuple result as
 		// [document_records, knowledge_id, workspace_id].
@@ -433,7 +457,7 @@ func TestMaxKBBatchCreateParsesMaxKBResponseAndPreservesPayload(t *testing.T) {
 		})
 	}))
 	client := newMaxKBTestClient(t, server.URL)
-	result, err := client.CreateDocuments(context.Background(), &CreateDocumentsRequest{WorkspaceID: "ws", KnowledgeID: "kb", Documents: []DocumentToCreate{{Name: "doc.md", SourceFileID: "source-1", Paragraphs: []Paragraph{{Title: "title", Content: "body"}}}}})
+	result, err := client.CreateDocuments(context.Background(), &CreateDocumentsRequest{WorkspaceID: "ws", KnowledgeID: "kb", Documents: []DocumentToCreate{{Name: "doc.md", SourceFileID: "source-1", Paragraphs: []Paragraph{{Title: "title", Content: "body\n\n![](./oss/file/image-1)"}}}}})
 	if err != nil || len(result.DocumentIDs) != 1 || result.DocumentIDs[0] != "document-1" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -845,6 +869,74 @@ func TestMaxKBErrorClassificationAndRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestMaxKBMutatingRequestsAreNeverAutomaticallyRetried(t *testing.T) {
+	var calls int32
+	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"code":503,"message":"temporary"}`)
+	}))
+	client := newMaxKBTestClient(t, server.URL)
+	client.cfg.MaxRetries = 3
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		calls = 0
+		if _, err := client.do(context.Background(), method, server.URL+"/mutating", strings.NewReader(`{"x":1}`), "application/json"); err == nil {
+			t.Fatalf("%s unexpectedly succeeded", method)
+		}
+		if got := atomic.LoadInt32(&calls); got != 1 {
+			t.Fatalf("%s request count = %d, want 1", method, got)
+		}
+	}
+}
+
+func TestMaxKBReadRequestsCanRetry(t *testing.T) {
+	var calls int32
+	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"code":503,"message":"temporary"}`)
+	}))
+	client := newMaxKBTestClient(t, server.URL)
+	client.cfg.MaxRetries = 3
+
+	if _, err := client.do(context.Background(), http.MethodGet, server.URL+"/read-only", nil, ""); err == nil {
+		t.Fatal("GET unexpectedly succeeded")
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("GET request count = %d, want 3", got)
+	}
+}
+
+func TestMaxKBMultipartRequestsAreNeverAutomaticallyRetried(t *testing.T) {
+	var calls int32
+	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"code":503,"message":"temporary"}`)
+	}))
+	client := newMaxKBTestClient(t, server.URL)
+	client.cfg.MaxRetries = 3
+
+	_, err := client.SmartSplit(context.Background(), &SmartSplitRequest{
+		WorkspaceID: "workspace",
+		KnowledgeID: "knowledge",
+		File:        strings.NewReader("content"),
+		FileName:    "document.md",
+		FileSize:    int64(len("content")),
+	})
+	if err == nil {
+		t.Fatal("multipart request unexpectedly succeeded")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("multipart request count = %d, want 1", got)
+	}
+}
+
 func TestMaxKBQueryBatchStatusIsExplicitLegacyIsolation(t *testing.T) {
 	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/admin/api/workspace/ws/dataset/kb/document/batch/task-1" || r.URL.RawQuery != "" {
@@ -917,6 +1009,41 @@ func TestMaxKBUploadToOSSRejectsUnsafeStringWithShapeDiagnostic(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("diagnostic=%q, missing %q", err.Error(), want)
 		}
+	}
+}
+
+func TestMaxKBSmartSplitAcceptsCreatedDocumentRecord(t *testing.T) {
+	server := newMaxKBTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/admin/api/workspace/ws/knowledge/kb/document/split" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		writeMaxKBEnvelope(w, 200, []any{
+			map[string]any{
+				"id":              "document-created-1",
+				"name":            "report.csv",
+				"status":          "nnnn",
+				"knowledge_id":    "kb",
+				"paragraph_count": 2,
+				"meta":            map[string]any{"source_file_id": "source-created-1"},
+			},
+		})
+	}))
+	client := newMaxKBTestClient(t, server.URL)
+	result, err := client.SmartSplit(context.Background(), &SmartSplitRequest{
+		WorkspaceID: "ws", KnowledgeID: "kb", File: strings.NewReader("a,b\n1,2\n"),
+		FileName: "report.csv", FileSize: 8,
+	})
+	if err != nil {
+		t.Fatalf("SmartSplit: %v", err)
+	}
+	if result == nil || result.DocumentID != "document-created-1" || result.SourceFileID != "source-created-1" || result.Name != "report.csv" {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(result.Paragraphs) != 0 {
+		t.Fatalf("created document response should not be treated as paragraphs: %#v", result.Paragraphs)
 	}
 }
 

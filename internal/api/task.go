@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"maxkb-local-file-sync/internal/app"
@@ -88,6 +89,8 @@ type RunFileDTO struct {
 	ProcessingStage string `json:"processingStage"`
 	ControlState    string `json:"controlState"`
 	FinalStatus     string `json:"finalStatus"`
+	ErrorCode       string `json:"errorCode,omitempty"`
+	ErrorCategory   string `json:"errorCategory,omitempty"`
 	ErrorMessage    string `json:"errorMessage,omitempty"`
 	CreatedAt       string `json:"createdAt"`
 	StartedAt       string `json:"startedAt,omitempty"`
@@ -349,6 +352,36 @@ func (api *TaskAPI) toTaskDTO(ctx context.Context, task *repository.SyncTask) (*
 	return dto, nil
 }
 
+func errorCategory(code string) string {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	switch {
+	case strings.HasPrefix(code, "MINERU_CONVERT_"), code == "MINERU_SUBMIT_UNKNOWN", code == "MINERU_STATUS_UNSUPPORTED":
+		return "MINERU_CONVERT"
+	case strings.HasPrefix(code, "MINERU_RESULT_DOWNLOAD"):
+		return "MINERU_DOWNLOAD"
+	case strings.HasPrefix(code, "MINERU_RESULT_"):
+		return "MINERU_RESULT"
+	case strings.HasPrefix(code, "MAXKB_UPLOAD"):
+		return "MAXKB_UPLOAD"
+	case strings.HasPrefix(code, "MAXKB_SPLIT"):
+		return "MAXKB_SPLIT"
+	case strings.HasPrefix(code, "MAXKB_CREATE"):
+		return "MAXKB_CREATE"
+	case strings.HasPrefix(code, "MAXKB_DELETE"):
+		return "MAXKB_DELETE"
+	case strings.HasPrefix(code, "SNAPSHOT"):
+		return "LOCAL_SNAPSHOT"
+	case code == "SOURCE_CHANGED":
+		return "SOURCE_CHANGED"
+	case code == "RECONCILE_REQUIRED":
+		return "RECONCILE"
+	case code != "":
+		return "OTHER"
+	default:
+		return ""
+	}
+}
+
 // toRunFileDTO 转换为运行文件 DTO
 func (api *TaskAPI) toRunFileDTO(ctx context.Context, rf *repository.RunFile) (*RunFileDTO, error) {
 	dto := &RunFileDTO{
@@ -360,6 +393,18 @@ func (api *TaskAPI) toRunFileDTO(ctx context.Context, rf *repository.RunFile) (*
 		FinalStatus:     string(rf.FinalStatus),
 		ErrorMessage:    rf.ErrorMessage,
 		CreatedAt:       rf.CreatedAt.Format(time.RFC3339),
+	}
+	// The durable attempt contains the stable error code written at the exact
+	// processing stage. Prefer it over the legacy run_files message so the UI
+	// can distinguish conversion, download, upload, split and create failures.
+	if store := api.app.ReliabilityStore(); store != nil {
+		if attempt, attemptErr := store.LatestAttempt(ctx, rf.RunFileID); attemptErr == nil && attempt != nil {
+			dto.ErrorCode = attempt.ErrorCode
+			if strings.TrimSpace(attempt.ErrorMessage) != "" {
+				dto.ErrorMessage = attempt.ErrorMessage
+			}
+			dto.ErrorCategory = errorCategory(attempt.ErrorCode)
+		}
 	}
 
 	if rf.StartedAt != nil {

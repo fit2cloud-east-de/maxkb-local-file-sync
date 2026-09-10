@@ -322,7 +322,7 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 		if err != nil {
 			var terminal *terminalRemoteError
 			if errors.As(err, &terminal) {
-				return e.fail(ctx, rf, "MINERU_FAILED", terminal.Error(), false)
+				return e.fail(ctx, rf, mineruFailureCode(terminal), terminal.Error(), false)
 			}
 			var resultErr *mineruResultError
 			if errors.As(err, &resultErr) {
@@ -335,7 +335,7 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 			if errors.As(err, &mineruErr) && mineruErr.Class == adapter.RetryClassProtocol {
 				return e.fail(ctx, rf, "MINERU_STATUS_UNSUPPORTED", err.Error(), false)
 			}
-			return fmt.Errorf("MINERU_WAIT_INTERRUPTED: %w", err)
+			return e.fail(ctx, rf, mineruFailureCode(err), err.Error(), false)
 		}
 		contentSize, err = snapshotFileSize(contentPath)
 		if err != nil {
@@ -356,7 +356,10 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 	// asynchronously; that server-side status is deliberately not a gate for
 	// this local sync run.
 	var split *adapter.SmartSplitResult
-	if attempt.MaxKBSourceFileID == "" {
+	// A split response may already contain the final MaxKB document id and no
+	// source_file_id. Treat that id as the durable acknowledgement; only call
+	// split when neither remote reference has been checkpointed.
+	if attempt.MaxKBSourceFileID == "" && attempt.MaxKBDocumentID == "" {
 		if err := checkpointRun(ctx, store, rf.TaskID); err != nil {
 			return err
 		}
@@ -364,12 +367,25 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 		if err != nil {
 			return e.fail(ctx, rf, smartSplitFailureCode(err), err.Error(), smartSplitRequiresReconcile(err))
 		}
-		if split == nil || split.SourceFileID == "" {
-			return e.fail(ctx, rf, "MAXKB_SPLIT_INCOMPATIBLE", "MaxKB split returned no source_file_id", false)
+		if split == nil {
+			return e.fail(ctx, rf, "MAXKB_SPLIT_INCOMPATIBLE", "MaxKB split returned an empty result", false)
 		}
-		attempt.MaxKBSourceFileID = split.SourceFileID
-		if err := e.saveAttempt(ctx, store, attempt); err != nil {
-			return err
+		if split.DocumentID != "" {
+			attempt.MaxKBDocumentID = split.DocumentID
+			if split.SourceFileID != "" {
+				attempt.MaxKBSourceFileID = split.SourceFileID
+			}
+			if err := e.saveAttempt(ctx, store, attempt); err != nil {
+				return err
+			}
+		} else if split.SourceFileID == "" {
+			return e.fail(ctx, rf, "MAXKB_SPLIT_INCOMPATIBLE", "MaxKB split returned neither document_id nor source_file_id", false)
+		}
+		if attempt.MaxKBDocumentID == "" {
+			attempt.MaxKBSourceFileID = split.SourceFileID
+			if err := e.saveAttempt(ctx, store, attempt); err != nil {
+				return err
+			}
 		}
 	} else if attempt.MaxKBDocumentID == "" {
 		// A resumed attempt may have the source id but not the paragraphs. The
@@ -378,6 +394,15 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 		split, err = e.smartSplitFromPath(ctx, maxkb, folder.WorkspaceID, folder.KBId, contentPath, contentFileName, contentSize)
 		if err != nil {
 			return e.fail(ctx, rf, smartSplitFailureCode(err), err.Error(), smartSplitRequiresReconcile(err))
+		}
+		if split != nil && split.DocumentID != "" {
+			attempt.MaxKBDocumentID = split.DocumentID
+			if split.SourceFileID != "" {
+				attempt.MaxKBSourceFileID = split.SourceFileID
+			}
+			if err := e.saveAttempt(ctx, store, attempt); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -400,7 +425,7 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 			Documents: []adapter.DocumentToCreate{{Name: name, Paragraphs: split.Paragraphs, SourceFileID: attempt.MaxKBSourceFileID}},
 		})
 		if err != nil {
-			return e.fail(ctx, rf, "MAXKB_CREATE_UNKNOWN", err.Error(), true)
+			return e.fail(ctx, rf, smartSplitFailureCode(err), err.Error(), maxKBMutationRequiresReconcile(err))
 		}
 		if created == nil || len(created.DocumentIDs) != 1 || strings.TrimSpace(created.DocumentIDs[0]) == "" {
 			return e.fail(ctx, rf, "MAXKB_CREATE_UNKNOWN", "MaxKB batch_create did not return exactly one document id", true)
@@ -431,7 +456,7 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 		if err := e.fileRepo.UpdateRemoteDocID(ctx, sf.FileID, attempt.MaxKBDocumentID); err != nil {
 			return err
 		}
-		if err := e.fileRepo.UpdateMD5(ctx, sf.FileID, current.MD5, current.MD5); err != nil {
+		if err := e.fileRepo.UpdateMD5(ctx, sf.FileID, current.MD5, current.MD5, shouldUseMinerU); err != nil {
 			return err
 		}
 		if err := e.fileRepo.UpdateStatus(ctx, sf.FileID, types.FileStatusSynced); err != nil {
@@ -522,10 +547,13 @@ func (e *SyncExecutor) deleteRemote(ctx context.Context, rf *repository.RunFile,
 		}
 	}
 	if err != nil {
-		// The target id is durable, but without a document lookup contract we
-		// cannot prove whether a transport error happened before or after delete.
-		// Keep the id/snapshot and require an explicit operator decision.
-		return e.fail(ctx, rf, "MAXKB_DELETE_UNKNOWN", err.Error(), true)
+		// A transport/server failure may have happened before or after MaxKB
+		// applied the delete. Keep the durable remote id and require explicit
+		// reconciliation only for that uncertain class. Authentication,
+		// permission, validation and other confirmed HTTP failures are ordinary
+		// failures and can be retried after configuration is corrected.
+		code, reconcile := maxKBDeleteFailure(err)
+		return e.fail(ctx, rf, code, err.Error(), reconcile)
 	}
 	t = time.Now().UTC()
 	a.DeleteCompletedAt = &t
@@ -533,6 +561,26 @@ func (e *SyncExecutor) deleteRemote(ctx context.Context, rf *repository.RunFile,
 		return err
 	}
 	return e.runFileRepo.UpdateStage(ctx, rf.RunFileID, types.ProcessingStageMaxKBDeleteCompleted)
+}
+
+func maxKBDeleteFailure(err error) (string, bool) {
+	var operationErr *adapter.MaxKBOperationError
+	var maxErr *adapter.MaxKBError
+	if errors.As(err, &operationErr) && operationErr != nil {
+		if operationErr.Operation != adapter.MaxKBOperationDelete {
+			return "MAXKB_DELETE_FAILED", false
+		}
+	}
+	if errors.As(err, &maxErr) && maxErr != nil {
+		switch maxErr.Type {
+		case adapter.MaxKBErrorTimeout, adapter.MaxKBErrorUnreachable, adapter.MaxKBErrorTLS:
+			return "MAXKB_DELETE_UNKNOWN", true
+		}
+		if maxErr.StatusCode >= 500 || maxErr.StatusCode == 0 {
+			return "MAXKB_DELETE_UNKNOWN", true
+		}
+	}
+	return "MAXKB_DELETE_FAILED", false
 }
 
 func (e *SyncExecutor) waitMinerU(ctx context.Context, m adapter.MinerUAdapter, a *repository.FileAttempt, folder *repository.SyncFolder, batchID, sourceName string, timeout, pollInterval time.Duration) (string, string, error) {
@@ -546,9 +594,9 @@ func (e *SyncExecutor) waitMinerU(ctx context.Context, m adapter.MinerUAdapter, 
 	if err != nil {
 		return "", "", fmt.Errorf("create MinerU result directory: %w", err)
 	}
-	// MaxKB supports ZIP ingestion directly. Keep the MinerU response as an
-	// opaque archive: do not extract it, inspect Markdown candidates, upload
-	// embedded images, or rewrite references locally.
+	// MaxKB supports ZIP ingestion directly. Normalize the MinerU response after
+	// download so the archive contains only full.md and images before it is
+	// handed to MaxKB. The original ZIP filename is retained.
 	resultPath := filepath.Join(resultRoot, mineruResultArchiveName(sourceName))
 	keepRoot := false
 	defer func() {
@@ -596,10 +644,10 @@ func (e *SyncExecutor) waitMinerU(ctx context.Context, m adapter.MinerUAdapter, 
 			}
 			closeErr := output.Close()
 			if err != nil {
-				return "", "", err
+				return "", "", &mineruResultError{code: "MINERU_RESULT_DOWNLOAD_FAILED", err: err}
 			}
 			if closeErr != nil {
-				return "", "", closeErr
+				return "", "", &mineruResultError{code: "MINERU_RESULT_SAVE_FAILED", err: closeErr}
 			}
 			info, err := os.Stat(resultPath)
 			if err != nil {
@@ -607,6 +655,9 @@ func (e *SyncExecutor) waitMinerU(ctx context.Context, m adapter.MinerUAdapter, 
 			}
 			if !info.Mode().IsRegular() || info.Size() == 0 {
 				return "", "", &mineruResultError{code: "MINERU_RESULT_INVALID", err: errors.New("MinerU returned an empty result ZIP")}
+			}
+			if err := normalizeMinerUResultZIP(ctx, resultPath); err != nil {
+				return "", "", &mineruResultError{code: "MINERU_RESULT_INVALID", err: err}
 			}
 			store := e.artifactStore
 			if store == nil {
@@ -682,16 +733,97 @@ func (e *SyncExecutor) waitBatch(ctx context.Context, m adapter.MaxKBAdapter, fo
 // Such an outcome must not be treated as an ordinary failed file: the user
 // needs to explicitly confirm remote absence before retrying.
 func smartSplitRequiresReconcile(err error) bool {
+	return maxKBMutationRequiresReconcile(err)
+}
+
+// maxKBMutationRequiresReconcile identifies a mutating MaxKB request whose
+// outcome cannot be proven from the client response. The request is never
+// replayed automatically; the durable run is held for an explicit operator
+// decision instead.
+func maxKBMutationRequiresReconcile(err error) bool {
+	var operationErr *adapter.MaxKBOperationError
+	if errors.As(err, &operationErr) && operationErr != nil {
+		switch operationErr.Operation {
+		case adapter.MaxKBOperationUpload, adapter.MaxKBOperationSplit, adapter.MaxKBOperationCreate, adapter.MaxKBOperationDelete:
+		default:
+			return false
+		}
+	}
 	var maxErr *adapter.MaxKBError
-	return errors.As(err, &maxErr) && maxErr != nil && maxErr.Type == adapter.MaxKBErrorTimeout
+	if !errors.As(err, &maxErr) || maxErr == nil {
+		return false
+	}
+	if maxErr.Type == adapter.MaxKBErrorTimeout || maxErr.Type == adapter.MaxKBErrorUnreachable || maxErr.Type == adapter.MaxKBErrorTLS || (maxErr.Type == adapter.MaxKBErrorIncompatible && maxErr.StatusCode > 0) {
+		return true
+	}
+	// A gateway timeout, rate limit or 5xx response can be generated after the
+	// upstream service accepted a mutating request. Do not replay it blindly.
+	return maxErr.StatusCode == 429 || maxErr.StatusCode >= 500
 }
 
 func smartSplitFailureCode(err error) string {
+	operation := adapter.MaxKBOperationSplit
+	var operationErr *adapter.MaxKBOperationError
+	if errors.As(err, &operationErr) && operationErr != nil && operationErr.Operation != "" {
+		operation = operationErr.Operation
+	}
 	var maxErr *adapter.MaxKBError
-	if errors.As(err, &maxErr) && maxErr != nil && maxErr.Type == adapter.MaxKBErrorIncompatible {
-		return "MAXKB_SPLIT_INCOMPATIBLE"
+	if errors.As(err, &maxErr) && maxErr != nil {
+		switch operation {
+		case adapter.MaxKBOperationUpload:
+			if maxKBMutationRequiresReconcile(err) {
+				return "MAXKB_UPLOAD_UNKNOWN"
+			}
+			return "MAXKB_UPLOAD_FAILED"
+		case adapter.MaxKBOperationCreate:
+			if maxKBMutationRequiresReconcile(err) {
+				return "MAXKB_CREATE_UNKNOWN"
+			}
+			return "MAXKB_CREATE_FAILED"
+		default:
+			switch maxErr.Type {
+			case adapter.MaxKBErrorTimeout:
+				return "MAXKB_SPLIT_TIMEOUT"
+			case adapter.MaxKBErrorUnreachable, adapter.MaxKBErrorTLS:
+				return "MAXKB_SPLIT_UNKNOWN"
+			case adapter.MaxKBErrorInvalidAPIKey:
+				return "MAXKB_SPLIT_AUTH_FAILED"
+			case adapter.MaxKBErrorPermissionDenied:
+				return "MAXKB_SPLIT_PERMISSION_DENIED"
+			case adapter.MaxKBErrorIncompatible:
+				return "MAXKB_SPLIT_INCOMPATIBLE"
+			}
+			if maxKBMutationRequiresReconcile(err) {
+				return "MAXKB_SPLIT_UNKNOWN"
+			}
+		}
+	}
+	if operation == adapter.MaxKBOperationUpload {
+		return "MAXKB_UPLOAD_FAILED"
 	}
 	return "MAXKB_SPLIT_FAILED"
+}
+
+func mineruFailureCode(err error) string {
+	var mineruErr *adapter.MinerUError
+	if errors.As(err, &mineruErr) && mineruErr != nil {
+		switch mineruErr.Class {
+		case adapter.RetryClassAuth:
+			return "MINERU_CONVERT_AUTH_FAILED"
+		case adapter.RetryClassPermission:
+			return "MINERU_CONVERT_PERMISSION_DENIED"
+		case adapter.RetryClassParameter, adapter.RetryClassUnsupported:
+			return "MINERU_CONVERT_UNSUPPORTED"
+		case adapter.RetryClassProtocol:
+			return "MINERU_CONVERT_PROTOCOL_ERROR"
+		case adapter.RetryClassTransient:
+			return "MINERU_CONVERT_FAILED"
+		}
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "timed out") || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		return "MINERU_CONVERT_TIMEOUT"
+	}
+	return "MINERU_CONVERT_FAILED"
 }
 
 func normalizeRemoteStatus(status string) string {

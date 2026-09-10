@@ -22,7 +22,7 @@ const queueLoading = ref(false)
 const queueError = ref('')
 const detailFilter = ref<'ALL' | 'SUCCESS' | 'FAILED' | 'PENDING'>('ALL')
 const errorVisible = ref(false)
-const selectedError = ref<{ title: string; path?: string; message: string; stage?: string; failureCount?: number }>({ title: '执行失败', message: '' })
+const selectedError = ref<{ title: string; category?: string; code?: string; summary?: string; path?: string; message: string; stage?: string; failureCount?: number }>({ title: '执行失败', message: '' })
 const errorLoading = ref(false)
 const controlError = ref('')
 const controlBusy = ref('')
@@ -204,19 +204,67 @@ function backToGroup() {
   if (selectedGroup.value) groupVisible.value = true
 }
 
+const errorCategoryLabels: Record<string, string> = {
+  MINERU_CONVERT: 'MinerU 转换报错',
+  MINERU_DOWNLOAD: 'MinerU 文件下载报错',
+  MINERU_RESULT: 'MinerU 结果处理报错',
+  MAXKB_UPLOAD: 'MinerU 文件上传 MaxKB 报错',
+  MAXKB_SPLIT: 'MaxKB 智能分段报错',
+  MAXKB_CREATE: 'MaxKB 创建文档报错',
+  MAXKB_DELETE: 'MaxKB 删除文档报错',
+  LOCAL_SNAPSHOT: '本地文件读取报错',
+  SOURCE_CHANGED: '同步期间文件发生变化',
+  RECONCILE: '远端状态待人工确认',
+  OTHER: '同步处理报错',
+}
+
+function errorCategoryLabel(category?: string) {
+  return (category && errorCategoryLabels[category]) || '同步处理报错'
+}
+
+function errorTitle(code?: string, category?: string, fallback = '任务执行失败') {
+  if (category) return errorCategoryLabel(category)
+  if (code?.startsWith('MINERU_')) return 'MinerU 处理报错'
+  if (code?.startsWith('MAXKB_')) return 'MaxKB 处理报错'
+  return fallback
+}
+
+function errorSummary(code?: string, category?: string) {
+  switch (code) {
+    case 'MINERU_CONVERT_AUTH_FAILED': return 'MinerU 认证失败，请检查访问 Token。'
+    case 'MINERU_CONVERT_PERMISSION_DENIED': return 'MinerU 没有权限处理该文件或任务。'
+    case 'MINERU_CONVERT_UNSUPPORTED': return '该文件格式不在 MinerU 支持范围内。'
+    case 'MINERU_CONVERT_TIMEOUT': return 'MinerU 转换等待超时。'
+    case 'MINERU_STATUS_UNSUPPORTED': return 'MinerU 返回了客户端无法识别的任务状态。'
+    case 'MINERU_RESULT_DOWNLOAD_FAILED': return 'MinerU 已完成转换，但结果文件下载失败。'
+    case 'MINERU_RESULT_INVALID': return 'MinerU 返回的结果文件为空或格式无效。'
+    case 'MINERU_RESULT_SAVE_FAILED': return 'MinerU 结果文件保存失败。'
+    case 'MAXKB_UPLOAD_FAILED': return '文件上传到 MaxKB 失败。'
+    case 'MAXKB_UPLOAD_UNKNOWN': return '文件上传结果不明确，请在异常处理中确认后再重试。'
+    case 'MAXKB_SPLIT_TIMEOUT': return 'MaxKB 智能分段请求超时，远端结果需要确认。'
+    case 'MAXKB_SPLIT_INCOMPATIBLE': return 'MaxKB 智能分段接口返回格式与当前版本不兼容。'
+    case 'MAXKB_CREATE_FAILED': return 'MaxKB 文档创建失败。'
+    case 'MAXKB_CREATE_UNKNOWN': return 'MaxKB 文档创建结果不明确，请在异常处理中确认。'
+    case 'SOURCE_CHANGED': return '同步过程中本地文件发生变化，本次未提交该文件。'
+    case 'RECONCILE_REQUIRED': return '远端操作结果不明确，需要人工确认后处理。'
+    default: return category ? errorCategoryLabel(category) : '文件处理失败，请展开技术详情查看原因。'
+  }
+}
+
 function meaningfulStage(stage?: string) {
   return stage && stage !== 'INIT' ? stage : undefined
 }
 
 function isFailedRunFile(file: RunFileDTO) {
-  return Boolean(file.errorMessage) || ['FAILED', 'MINERU_FAILED', 'RECONCILE_REQUIRED', 'STOPPED'].includes(file.finalStatus)
+  return Boolean(file.errorMessage || file.errorCode) || ['FAILED', 'MINERU_FAILED', 'RECONCILE_REQUIRED', 'STOPPED'].includes(file.finalStatus)
 }
 
 async function showTaskError(task: TaskDTO) {
   const requestId = ++errorRequestId
   const taskMessage = task.errorMessage || task.errorSummary || ''
   selectedError.value = {
-    title: '任务执行失败',
+    title: errorTitle(undefined, undefined, '任务执行失败'),
+    summary: taskMessage || '任务执行失败，请查看失败文件。',
     message: taskMessage,
     stage: meaningfulStage(task.processingStage),
     failureCount: task.failedCount || undefined,
@@ -233,7 +281,10 @@ async function showTaskError(task: TaskDTO) {
     const failedFile = fileWithMessage || failedFiles[0]
     if (failedFile) {
       selectedError.value = {
-        title: '任务执行失败',
+        title: errorTitle(failedFile.errorCode, failedFile.errorCategory, '任务执行失败'),
+        category: failedFile.errorCategory,
+        code: failedFile.errorCode,
+        summary: errorSummary(failedFile.errorCode, failedFile.errorCategory),
         path: failedFile.relativePath,
         message: failedFile.errorMessage || taskMessage || '文件未提供具体错误信息。',
         stage: meaningfulStage(failedFile.processingStage) || meaningfulStage(task.processingStage),
@@ -242,6 +293,7 @@ async function showTaskError(task: TaskDTO) {
     } else {
       selectedError.value = {
         title: '任务执行失败',
+        summary: taskMessage || '任务未提供具体错误信息。',
         message: taskMessage || '任务未提供具体错误信息。',
         stage: meaningfulStage(task.processingStage),
         failureCount: task.failedCount || undefined,
@@ -252,6 +304,7 @@ async function showTaskError(task: TaskDTO) {
     if (requestId === errorRequestId && errorVisible.value) {
       selectedError.value = {
         title: '任务执行失败',
+        summary: taskMessage || '任务未提供具体错误信息。',
         message: taskMessage || '任务未提供具体错误信息。',
         stage: meaningfulStage(task.processingStage),
         failureCount: task.failedCount || undefined,
@@ -277,7 +330,7 @@ function showTaskErrorById(taskId: string) {
 function showFileError(file: RunFileDTO) {
   ++errorRequestId
   errorLoading.value = false
-  selectedError.value = { title: '文件处理失败', path: file.relativePath, message: file.errorMessage || '文件未提供具体错误信息。', stage: meaningfulStage(file.processingStage) }
+  selectedError.value = { title: errorTitle(file.errorCode, file.errorCategory, '文件处理失败'), category: file.errorCategory, code: file.errorCode, summary: errorSummary(file.errorCode, file.errorCategory), path: file.relativePath, message: file.errorMessage || '文件未提供具体错误信息。', stage: meaningfulStage(file.processingStage) }
   errorVisible.value = true
 }
 
@@ -454,7 +507,7 @@ async function control(action: 'pause' | 'resume' | 'stop', taskId: string) {
     </el-drawer>
 
     <el-dialog v-model="errorVisible" title="错误详情" width="520px" destroy-on-close>
-      <div class="error-detail-dialog"><div class="error-detail-title"><AlertTriangle :size="19" /><strong>{{ selectedError.title }}</strong></div><dl><template v-if="selectedError.path"><dt>文件</dt><dd class="mono">{{ selectedError.path }}</dd></template><template v-if="selectedError.failureCount && selectedError.failureCount > 1"><dt>失败文件</dt><dd>共 {{ selectedError.failureCount }} 个文件失败，以下展示其中一条错误</dd></template><template v-if="selectedError.stage"><dt>处理阶段</dt><dd><StatusBadge :status="selectedError.stage" type="file" /></dd></template><dt>错误原因</dt><dd class="error-detail-message">{{ selectedError.message }}<span v-if="errorLoading" class="error-detail-loading">正在读取文件详情…</span></dd></dl></div>
+      <div class="error-detail-dialog"><div class="error-detail-title"><AlertTriangle :size="19" /><strong>{{ selectedError.title }}</strong></div><dl><template v-if="selectedError.path"><dt>文件</dt><dd class="mono">{{ selectedError.path }}</dd></template><template v-if="selectedError.failureCount && selectedError.failureCount > 1"><dt>失败文件</dt><dd>共 {{ selectedError.failureCount }} 个文件失败，以下展示其中一条错误</dd></template><template v-if="selectedError.stage"><dt>处理阶段</dt><dd><StatusBadge :status="selectedError.stage" type="file" /></dd></template><dt>处理结果</dt><dd class="error-detail-message">{{ selectedError.summary || selectedError.message || '文件处理失败。' }}<span v-if="errorLoading" class="error-detail-loading">正在读取文件详情…</span></dd><template v-if="selectedError.code"><dt>错误类型</dt><dd>{{ selectedError.code }}</dd></template><template v-if="selectedError.message && selectedError.message !== selectedError.summary"><dt>技术详情</dt><dd class="error-detail-message">{{ selectedError.message }}</dd></template></dl></div>
       <template #footer><el-button type="primary" @click="errorVisible = false">知道了</el-button></template>
     </el-dialog>
   </div>

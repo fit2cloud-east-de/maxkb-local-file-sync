@@ -6,10 +6,6 @@ export function CleanupMinerUArtifacts() {
   return window['go']['main']['App']['CleanupMinerUArtifacts']();
 }
 
-export function ConfigureCloseBehavior(arg1) {
-  return window['go']['main']['App']['ConfigureCloseBehavior'](arg1);
-}
-
 export function ConfigureMaxKB(arg1) {
   return window['go']['main']['App']['ConfigureMaxKB'](arg1);
 }
@@ -56,10 +52,6 @@ export function EnableTask(arg1) {
 
 export function GetAppVersion() {
   return window['go']['main']['App']['GetAppVersion']();
-}
-
-export function GetCloseBehavior() {
-  return window['go']['main']['App']['GetCloseBehavior']();
 }
 
 export function GetDataDirectory() {

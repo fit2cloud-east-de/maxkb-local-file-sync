@@ -26,6 +26,11 @@ const (
 	defaultMaxKBRetries  = 3
 )
 
+const (
+	MinMaxKBTimeoutSeconds = 30
+	MaxMaxKBTimeoutSeconds = 300
+)
+
 type maxkbClient struct {
 	cfg    MaxKBConfig
 	base   *url.URL
@@ -130,7 +135,16 @@ func (c *maxkbClient) do(ctx context.Context, method, endpoint string, body io.R
 		}
 	}
 	var lastErr error
+	// Only read-only GET requests are safe to replay automatically. A timeout
+	// or transient HTTP response for POST/PUT/DELETE may arrive after MaxKB has
+	// already applied the operation, so replaying it can create duplicate
+	// uploads/documents or make a delete outcome ambiguous. Mutating requests
+	// are deliberately single-attempt; the executor decides whether an
+	// uncertain result must enter RECONCILE_REQUIRED.
 	attempts := c.cfg.MaxRetries
+	if method != http.MethodGet {
+		attempts = 1
+	}
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -564,7 +578,7 @@ func intValue(raw json.RawMessage) int {
 // document by itself.
 func (c *maxkbClient) UploadDocument(ctx context.Context, req *UploadDocumentRequest) (*UploadDocumentResponse, error) {
 	if req == nil {
-		return nil, fmt.Errorf("UploadDocument request is nil")
+		return nil, &MaxKBOperationError{Operation: MaxKBOperationUpload, Err: fmt.Errorf("UploadDocument request is nil")}
 	}
 	result, err := c.UploadToOSS(ctx, bytes.NewReader(req.FileContent), req.FileName, req.FileSize)
 	if err != nil {
@@ -574,23 +588,29 @@ func (c *maxkbClient) UploadDocument(ctx context.Context, req *UploadDocumentReq
 }
 
 func (c *maxkbClient) UploadToOSS(ctx context.Context, file io.Reader, fileName string, fileSize int64) (*OSSUploadResult, error) {
+	uploadError := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		return &MaxKBOperationError{Operation: MaxKBOperationUpload, Err: err}
+	}
 	if file == nil {
-		return nil, fmt.Errorf("OSS upload file is nil")
+		return nil, uploadError(fmt.Errorf("OSS upload file is nil"))
 	}
 	endpoint, err := c.endpoint("api", "oss", "file")
 	if err != nil {
-		return nil, err
+		return nil, uploadError(err)
 	}
 	resp, err := c.doMultipart(ctx, http.MethodPost, endpoint, file, fileName, fileSize, map[string]string{
 		"source_id":   "TEMPORARY_120_MINUTE",
 		"source_type": "TEMPORARY_120_MINUTE",
 	})
 	if err != nil {
-		return nil, err
+		return nil, uploadError(err)
 	}
 	code, raw, err := decodeEnvelopeRaw(resp, "upload_oss")
 	if err != nil {
-		return nil, err
+		return nil, uploadError(err)
 	}
 	// MaxKB v2.10.4-lts returns data as the relative OSS path string
 	// "./oss/file/<id>". Keep compatibility with object-shaped responses
@@ -599,7 +619,7 @@ func (c *maxkbClient) UploadToOSS(ctx context.Context, file io.Reader, fileName 
 	if json.Unmarshal(raw, &pathValue) == nil {
 		fileID := extractOSSFileID(pathValue)
 		if fileID == "" {
-			return nil, incompatibleResponseError(resp, code, "upload_oss", "string OSS path or object{file_id,url,path}", raw)
+			return nil, uploadError(incompatibleResponseError(resp, code, "upload_oss", "string OSS path or object{file_id,url,path}", raw))
 		}
 		return &OSSUploadResult{FileID: fileID, FileURL: pathValue}, nil
 	}
@@ -609,7 +629,7 @@ func (c *maxkbClient) UploadToOSS(ctx context.Context, file io.Reader, fileName 
 		Path   string `json:"path"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, incompatibleResponseError(resp, code, "upload_oss", "string OSS path or object{file_id,url,path}", raw)
+		return nil, uploadError(incompatibleResponseError(resp, code, "upload_oss", "string OSS path or object{file_id,url,path}", raw))
 	}
 	fileID := strings.TrimSpace(data.FileID)
 	fileURL := maxkbFirstNonEmpty(data.URL, data.Path)
@@ -617,7 +637,7 @@ func (c *maxkbClient) UploadToOSS(ctx context.Context, file io.Reader, fileName 
 		fileID = extractOSSFileID(fileURL)
 	}
 	if fileID == "" && fileURL == "" {
-		return nil, incompatibleResponseError(resp, code, "upload_oss", "string OSS path or object{file_id,url,path}", raw)
+		return nil, uploadError(incompatibleResponseError(resp, code, "upload_oss", "string OSS path or object{file_id,url,path}", raw))
 	}
 	return &OSSUploadResult{FileID: fileID, FileURL: fileURL}, nil
 }
@@ -635,21 +655,67 @@ type smartSplitDocumentWire struct {
 	SourceFileID string                    `json:"source_file_id"`
 }
 
+// maxKBCreatedDocumentWire is the response shape returned by the target
+// MaxKB deployment for /document/split. Despite the endpoint name, MaxKB can
+// return a fully-created document record (including id and meta) after the
+// upload and smart-segmentation work has completed.
+type maxKBCreatedDocumentWire struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	KnowledgeID    string `json:"knowledge_id"`
+	ParagraphCount int    `json:"paragraph_count"`
+	Meta           struct {
+		SourceFileID string `json:"source_file_id"`
+	} `json:"meta"`
+}
+
 func (c *maxkbClient) SmartSplit(ctx context.Context, req *SmartSplitRequest) (*SmartSplitResult, error) {
 	if req == nil || req.File == nil {
-		return nil, fmt.Errorf("SmartSplit request/file is nil")
+		return nil, &MaxKBOperationError{Operation: MaxKBOperationSplit, Err: fmt.Errorf("SmartSplit request/file is nil")}
 	}
 	endpoint, err := c.endpoint("api", "workspace", pathSegment(req.WorkspaceID), "knowledge", pathSegment(req.KnowledgeID), "document", "split")
 	if err != nil {
-		return nil, err
+		return nil, &MaxKBOperationError{Operation: MaxKBOperationSplit, Err: err}
 	}
+	// Match MaxKB's default intelligent-segmentation upload flow: submit only
+	// the file and leave with_filter unset. In MaxKB v2.10.4-lts,
+	// with_filter=true collapses consecutive newlines. That removes the blank
+	// line before a Markdown image and causes the image syntax to render as
+	// plain text after batch_create.
 	resp, err := c.doMultipart(ctx, http.MethodPost, endpoint, req.File, req.FileName, req.FileSize, nil)
 	if err != nil {
-		return nil, err
+		// /document/split is the smart-segmentation stage. Although it uses
+		// multipart/form-data, it is not the temporary OSS upload endpoint;
+		// keep the operation category aligned with the actual remote API.
+		return nil, &MaxKBOperationError{Operation: MaxKBOperationSplit, Err: err}
 	}
 	code, raw, err := decodeEnvelopeRaw(resp, "smart_split")
 	if err != nil {
-		return nil, err
+		return nil, &MaxKBOperationError{Operation: MaxKBOperationSplit, Err: err}
+	}
+	splitError := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		return &MaxKBOperationError{Operation: MaxKBOperationSplit, Err: err}
+	}
+
+	// The MaxKB v2.10.4-lts deployment used by the client may return document
+	// records here instead of paragraphs. This is an acknowledgement that the
+	// document has already been created and segmented. Recognize only the
+	// explicit document-record shape; unknown arrays must still fail closed.
+	var createdDocuments []maxKBCreatedDocumentWire
+	if err := json.Unmarshal(raw, &createdDocuments); err == nil && isCreatedDocumentRecordArray(raw, createdDocuments) {
+		if len(createdDocuments) != 1 {
+			return nil, splitError(incompatibleResponseError(resp, code, "smart_split", "one created document record for one uploaded file", raw))
+		}
+		document := createdDocuments[0]
+		return &SmartSplitResult{
+			Name:         maxkbFirstNonEmpty(document.Name, req.FileName),
+			DocumentID:   strings.TrimSpace(document.ID),
+			SourceFileID: strings.TrimSpace(document.Meta.SourceFileID),
+		}, nil
 	}
 
 	// MaxKB v2.10.4-lts returns one item per parsed document. The item shape is
@@ -659,7 +725,7 @@ func (c *maxkbClient) SmartSplit(ctx context.Context, req *SmartSplitRequest) (*
 	if err := json.Unmarshal(raw, &documents); err == nil && isDocumentSplitArray(documents) {
 		result, normalizeErr := normalizeDocumentSplit(req.FileName, documents)
 		if normalizeErr != nil {
-			return nil, incompatibleResponseError(resp, code, "smart_split", "array of {name,content[],source_file_id}", raw)
+			return nil, splitError(incompatibleResponseError(resp, code, "smart_split", "array of {name,content[],source_file_id}", raw))
 		}
 		return result, nil
 	}
@@ -668,7 +734,11 @@ func (c *maxkbClient) SmartSplit(ctx context.Context, req *SmartSplitRequest) (*
 	// gateways, where data is a flat paragraph array carrying source ids.
 	var paragraphs []smartSplitParagraphWire
 	if err := json.Unmarshal(raw, &paragraphs); err == nil && len(paragraphs) > 0 && isParagraphArray(paragraphs) {
-		return normalizeParagraphSplit(req.FileName, paragraphs, raw, resp, code)
+		result, normalizeErr := normalizeParagraphSplit(req.FileName, paragraphs, raw, resp, code)
+		if normalizeErr != nil {
+			return nil, splitError(normalizeErr)
+		}
+		return result, nil
 	}
 
 	// A few deployments expose a single document object. Accept it only when
@@ -677,11 +747,40 @@ func (c *maxkbClient) SmartSplit(ctx context.Context, req *SmartSplitRequest) (*
 	if err := json.Unmarshal(raw, &wrapped); err == nil && (wrapped.Name != "" || wrapped.Content != nil || wrapped.Paragraphs != nil || wrapped.SourceFileID != "") {
 		result, normalizeErr := normalizeDocumentSplit(req.FileName, []smartSplitDocumentWire{wrapped})
 		if normalizeErr != nil {
-			return nil, incompatibleResponseError(resp, code, "smart_split", "object {name,content[],source_file_id}", raw)
+			return nil, splitError(incompatibleResponseError(resp, code, "smart_split", "object {name,content[],source_file_id}", raw))
 		}
 		return result, nil
 	}
-	return nil, incompatibleResponseError(resp, code, "smart_split", "array of {name,content[],source_file_id}", raw)
+	return nil, splitError(incompatibleResponseError(resp, code, "smart_split", "array of {name,content[],source_file_id}", raw))
+}
+
+func isCreatedDocumentRecordArray(raw json.RawMessage, documents []maxKBCreatedDocumentWire) bool {
+	if len(documents) == 0 || jsonShape(raw) != "array" {
+		return false
+	}
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil || len(items) != len(documents) {
+		return false
+	}
+	for i, item := range items {
+		if strings.TrimSpace(documents[i].ID) == "" {
+			return false
+		}
+		// Require at least one document-specific marker in addition to id. This
+		// prevents arbitrary arrays containing an id field from being accepted.
+		if _, ok := item["name"]; !ok {
+			if _, ok := item["status"]; !ok {
+				if _, ok := item["knowledge_id"]; !ok {
+					if _, ok := item["meta"]; !ok {
+						if _, ok := item["paragraph_count"]; !ok {
+							return false
+						}
+					}
+				}
+			}
+		}
+	}
+	return true
 }
 
 func isDocumentSplitArray(documents []smartSplitDocumentWire) bool {
@@ -769,14 +868,31 @@ func normalizeParagraphSplit(fallbackName string, paragraphs []smartSplitParagra
 }
 
 func (c *maxkbClient) CreateDocuments(ctx context.Context, req *CreateDocumentsRequest) (*CreateDocumentsResult, error) {
+	createError := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		return &MaxKBOperationError{Operation: MaxKBOperationCreate, Err: err}
+	}
 	if req == nil {
-		return nil, fmt.Errorf("CreateDocuments request is nil")
+		return nil, createError(fmt.Errorf("CreateDocuments request is nil"))
 	}
 	payload := make([]map[string]any, 0, len(req.Documents))
 	for _, document := range req.Documents {
-		paragraphs := make([]map[string]string, 0, len(document.Paragraphs))
+		paragraphs := make([]map[string]any, 0, len(document.Paragraphs))
 		for _, paragraph := range document.Paragraphs {
-			paragraphs = append(paragraphs, map[string]string{"title": paragraph.Title, "content": paragraph.Content})
+			// Match the verified reference upload payload: paragraphs are active
+			// by default, and a non-empty title is also sent as a problem seed.
+			// Keep these MaxKB-specific fields isolated inside the adapter.
+			item := map[string]any{
+				"title":     paragraph.Title,
+				"content":   paragraph.Content,
+				"is_active": true,
+			}
+			if strings.TrimSpace(paragraph.Title) != "" {
+				item["problem_list"] = []map[string]string{{"content": paragraph.Title}}
+			}
+			paragraphs = append(paragraphs, item)
 		}
 		payload = append(payload, map[string]any{
 			"name":           document.Name,
@@ -786,15 +902,15 @@ func (c *maxkbClient) CreateDocuments(ctx context.Context, req *CreateDocumentsR
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal MaxKB batch_create request: %w", err)
+		return nil, createError(fmt.Errorf("marshal MaxKB batch_create request: %w", err))
 	}
 	endpoint, err := c.endpoint("api", "workspace", pathSegment(req.WorkspaceID), "knowledge", pathSegment(req.KnowledgeID), "document", "batch_create")
 	if err != nil {
-		return nil, err
+		return nil, createError(err)
 	}
 	resp, err := c.do(ctx, http.MethodPut, endpoint, bytes.NewReader(body), "application/json")
 	if err != nil {
-		return nil, err
+		return nil, createError(err)
 	}
 	// MaxKB deployments have returned two compatible shapes for batch_create:
 	// a direct array of created document records, and the older three-item
@@ -802,11 +918,11 @@ func (c *maxkbClient) CreateDocuments(ctx context.Context, req *CreateDocumentsR
 	// deployment-specific parsing inside the adapter.
 	code, rawData, err := decodeEnvelopeRaw(resp, "batch_create")
 	if err != nil {
-		return nil, err
+		return nil, createError(err)
 	}
 	var data []json.RawMessage
 	if err := json.Unmarshal(rawData, &data); err != nil {
-		return nil, incompatibleBatchCreateError(resp, code, "MaxKB batch_create response has an unsupported data shape", "data document record array or tuple [records, knowledge_id, workspace_id]", rawData)
+		return nil, createError(incompatibleBatchCreateError(resp, code, "MaxKB batch_create response has an unsupported data shape", "data document record array or tuple [records, knowledge_id, workspace_id]", rawData))
 	}
 
 	// The legacy tuple is identified by its first element being an array. Do
@@ -817,7 +933,7 @@ func (c *maxkbClient) CreateDocuments(ctx context.Context, req *CreateDocumentsR
 	if len(data) == 3 && jsonShape(data[0]) == "array" {
 		recordsData = nil
 		if err := json.Unmarshal(data[0], &recordsData); err != nil {
-			return nil, incompatibleBatchCreateError(resp, code, "MaxKB batch_create response document records have an unsupported shape", "data[0] array of records with string id", data[0], jsonArraySummary(data[0]))
+			return nil, createError(incompatibleBatchCreateError(resp, code, "MaxKB batch_create response document records have an unsupported shape", "data[0] array of records with string id", data[0], jsonArraySummary(data[0])))
 		}
 		recordsPath = "data[0]"
 	}
@@ -826,20 +942,20 @@ func (c *maxkbClient) CreateDocuments(ctx context.Context, req *CreateDocumentsR
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(rawJSONArray(recordsData), &records); err != nil {
-		return nil, incompatibleBatchCreateError(resp, code, "MaxKB batch_create response document records have an unsupported shape", recordsPath+" array of records with string id", rawData, jsonArraySummary(rawData))
+		return nil, createError(incompatibleBatchCreateError(resp, code, "MaxKB batch_create response document records have an unsupported shape", recordsPath+" array of records with string id", rawData, jsonArraySummary(rawData)))
 	}
 	if len(records) != len(req.Documents) {
-		return nil, incompatibleBatchCreateError(resp, code, fmt.Sprintf("MaxKB batch_create returned %d document records for %d requested documents", len(records), len(req.Documents)), recordsPath+" record count must equal request document count", rawData, jsonArraySummary(rawData), fmt.Sprintf("requested_count=%d", len(req.Documents)))
+		return nil, createError(incompatibleBatchCreateError(resp, code, fmt.Sprintf("MaxKB batch_create returned %d document records for %d requested documents", len(records), len(req.Documents)), recordsPath+" record count must equal request document count", rawData, jsonArraySummary(rawData), fmt.Sprintf("requested_count=%d", len(req.Documents))))
 	}
 	documentIDs := make([]string, 0, len(records))
 	seen := make(map[string]struct{}, len(records))
 	for index, record := range records {
 		id := strings.TrimSpace(record.ID)
 		if id == "" {
-			return nil, incompatibleBatchCreateError(resp, code, "MaxKB batch_create response did not contain a document id", "each "+recordsPath+" record must contain a non-empty string id", rawData, jsonArraySummary(rawData), fmt.Sprintf("record_index=%d missing_required_fields=id", index))
+			return nil, createError(incompatibleBatchCreateError(resp, code, "MaxKB batch_create response did not contain a document id", "each "+recordsPath+" record must contain a non-empty string id", rawData, jsonArraySummary(rawData), fmt.Sprintf("record_index=%d missing_required_fields=id", index)))
 		}
 		if _, ok := seen[id]; ok {
-			return nil, incompatibleBatchCreateError(resp, code, "MaxKB batch_create response contained duplicate document ids", recordsPath+" record ids must be unique", rawData, jsonArraySummary(rawData), fmt.Sprintf("record_index=%d duplicate_id=true", index))
+			return nil, createError(incompatibleBatchCreateError(resp, code, "MaxKB batch_create response contained duplicate document ids", recordsPath+" record ids must be unique", rawData, jsonArraySummary(rawData), fmt.Sprintf("record_index=%d duplicate_id=true", index)))
 		}
 		seen[id] = struct{}{}
 		documentIDs = append(documentIDs, id)
@@ -981,9 +1097,12 @@ func (c *maxkbClient) GetDocumentStatus(ctx context.Context, workspaceID, knowle
 
 func (c *maxkbClient) DeleteDocument(ctx context.Context, req *DeleteDocumentRequest) error {
 	if req == nil {
-		return fmt.Errorf("DeleteDocument request is nil")
+		return &MaxKBOperationError{Operation: MaxKBOperationDelete, Err: fmt.Errorf("DeleteDocument request is nil")}
 	}
-	return c.deleteDocument(ctx, req.WorkspaceID, req.KBId, req.DocumentID)
+	if err := c.deleteDocument(ctx, req.WorkspaceID, req.KBId, req.DocumentID); err != nil {
+		return &MaxKBOperationError{Operation: MaxKBOperationDelete, Err: err}
+	}
+	return nil
 }
 
 func (c *maxkbClient) deleteDocument(ctx context.Context, workspaceID, knowledgeID, documentID string) error {
@@ -1668,13 +1787,11 @@ func (c *maxkbClient) doMultipart(ctx context.Context, method, endpoint string, 
 		return nil, fmt.Errorf("invalid MaxKB multipart endpoint: %w", err)
 	}
 	seeker, replayable := file.(io.Seeker)
-	attempts := c.cfg.MaxRetries
-	if attempts < 1 {
-		attempts = 1
-	}
-	if !replayable {
-		attempts = 1
-	}
+	// Multipart calls in this adapter are mutating operations (OSS upload and
+	// smart split). Even when the source can be rewound, a timeout does not tell
+	// us whether MaxKB accepted the first request. Never replay them
+	// automatically; the executor handles the resulting uncertainty.
+	attempts := 1
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if replayable {

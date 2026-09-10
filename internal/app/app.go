@@ -107,13 +107,16 @@ func NewApplication(cfg Config) (*Application, error) {
 	// worker 已经领取批次后才异步加载，否则恢复批次会以配置缺失失败。
 	var maxkbAdapter adapter.MaxKBAdapter
 	var maxkbURL, mineruBaseURL, mineruMode string
-	var maxkbValid, mineruValid, mineruEnabled int
-	if err := database.QueryRow(`SELECT maxkb_normalized_base_url,maxkb_validation_success,mineru_base_url,mineru_mode,mineru_enabled,mineru_validation_success FROM system_settings WHERE id=1`).Scan(&maxkbURL, &maxkbValid, &mineruBaseURL, &mineruMode, &mineruEnabled, &mineruValid); err != nil {
+	var maxkbValid, mineruValid, mineruEnabled, maxkbTimeoutSeconds int
+	if err := database.QueryRow(`SELECT maxkb_normalized_base_url,maxkb_validation_success,maxkb_timeout_seconds,mineru_base_url,mineru_mode,mineru_enabled,mineru_validation_success FROM system_settings WHERE id=1`).Scan(&maxkbURL, &maxkbValid, &maxkbTimeoutSeconds, &mineruBaseURL, &mineruMode, &mineruEnabled, &mineruValid); err != nil {
 		return nil, fmt.Errorf("failed to load persisted service settings: %w", err)
+	}
+	if maxkbTimeoutSeconds < adapter.MinMaxKBTimeoutSeconds || maxkbTimeoutSeconds > adapter.MaxMaxKBTimeoutSeconds {
+		maxkbTimeoutSeconds = adapter.MinMaxKBTimeoutSeconds
 	}
 	if maxkbValid == 1 && maxkbURL != "" {
 		if apiKey, e2 := credStore.Get(credential.MaxKBAPIKey); e2 == nil && strings.TrimSpace(apiKey) != "" {
-			maxkbAdapter = adapter.NewMaxKBAdapter(adapter.MaxKBConfig{BaseURL: maxkbURL, APIKey: apiKey, MaxRetries: 3, EnableDebug: false})
+			maxkbAdapter = adapter.NewMaxKBAdapter(adapter.MaxKBConfig{BaseURL: maxkbURL, APIKey: apiKey, Timeout: time.Duration(maxkbTimeoutSeconds) * time.Second, MaxRetries: 3, EnableDebug: false})
 		}
 	}
 	var mineruAdapter adapter.MinerUAdapter
@@ -253,17 +256,21 @@ func (a *Application) GetCredStore() credential.Store {
 // ServiceSettings is non-secret persisted configuration. Credential values
 // are intentionally excluded; callers must retrieve them from the OS store.
 type ServiceSettings struct {
-	BaseURL           string
-	Mode              string
-	Enabled           bool
-	ValidationSuccess bool
+	BaseURL             string
+	Mode                string
+	Enabled             bool
+	ValidationSuccess   bool
+	MaxKBTimeoutSeconds int
 }
 
 func (a *Application) MaxKBSettings() (ServiceSettings, error) {
 	var s ServiceSettings
 	var valid int
-	if err := a.db.QueryRow(`SELECT maxkb_base_url,maxkb_validation_success FROM system_settings WHERE id=1`).Scan(&s.BaseURL, &valid); err != nil {
+	if err := a.db.QueryRow(`SELECT maxkb_base_url,maxkb_validation_success,maxkb_timeout_seconds FROM system_settings WHERE id=1`).Scan(&s.BaseURL, &valid, &s.MaxKBTimeoutSeconds); err != nil {
 		return s, fmt.Errorf("load MaxKB settings: %w", err)
+	}
+	if s.MaxKBTimeoutSeconds < adapter.MinMaxKBTimeoutSeconds || s.MaxKBTimeoutSeconds > adapter.MaxMaxKBTimeoutSeconds {
+		s.MaxKBTimeoutSeconds = adapter.MinMaxKBTimeoutSeconds
 	}
 	s.ValidationSuccess = valid == 1
 	return s, nil
@@ -340,7 +347,7 @@ func (a *Application) SystemSettingsRepo() repository.SystemSettingsRepository {
 func (a *Application) ReliabilityStore() *repository.ReliabilityStore { return a.reliability }
 
 // TestMaxKBConnection performs a real health request without changing the active adapter.
-func (a *Application) TestMaxKBConnection(baseURL, apiKey string) (string, error) {
+func (a *Application) TestMaxKBConnection(baseURL, apiKey string, timeoutSeconds int) (string, error) {
 	normalized, err := credential.ValidateBaseURL(baseURL)
 	if err != nil {
 		return "", err
@@ -348,7 +355,10 @@ func (a *Application) TestMaxKBConnection(baseURL, apiKey string) (string, error
 	if strings.TrimSpace(apiKey) == "" || credential.IsMasked(apiKey) {
 		return "", fmt.Errorf("MaxKB API key is required")
 	}
-	client := adapter.NewMaxKBAdapter(adapter.MaxKBConfig{BaseURL: normalized, APIKey: apiKey, MaxRetries: 1})
+	if timeoutSeconds < adapter.MinMaxKBTimeoutSeconds || timeoutSeconds > adapter.MaxMaxKBTimeoutSeconds {
+		timeoutSeconds = adapter.MinMaxKBTimeoutSeconds
+	}
+	client := adapter.NewMaxKBAdapter(adapter.MaxKBConfig{BaseURL: normalized, APIKey: apiKey, Timeout: time.Duration(timeoutSeconds) * time.Second, MaxRetries: 1})
 	profile, err := client.Ping(a.ctx)
 	if err != nil {
 		return "", err
@@ -356,21 +366,22 @@ func (a *Application) TestMaxKBConnection(baseURL, apiKey string) (string, error
 	// A connection test for unsaved form data is only a probe. It must not turn
 	// an unpersisted draft into the active runtime configuration.
 	var savedURL string
-	if err := a.db.QueryRow(`SELECT maxkb_normalized_base_url FROM system_settings WHERE id=1`).Scan(&savedURL); err != nil {
+	var savedTimeoutSeconds int
+	if err := a.db.QueryRow(`SELECT maxkb_normalized_base_url,maxkb_timeout_seconds FROM system_settings WHERE id=1`).Scan(&savedURL, &savedTimeoutSeconds); err != nil {
 		return "", fmt.Errorf("read MaxKB draft: %w", err)
 	}
 	savedKey, err := a.credStore.Get(credential.MaxKBAPIKey)
 	if err != nil {
 		return "", fmt.Errorf("read MaxKB credential: %w", err)
 	}
-	if savedURL != normalized || savedKey != apiKey {
+	if savedURL != normalized || savedKey != apiKey || savedTimeoutSeconds != timeoutSeconds {
 		return profile.Version, nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := a.db.Exec(`UPDATE system_settings SET maxkb_validation_success=1,maxkb_version=?,maxkb_version_display=?,maxkb_last_validated_at=?,updated_at=? WHERE id=1`, profile.Version, profile.VersionDisplay, now, now); err != nil {
 		return "", fmt.Errorf("persist MaxKB validation result: %w", err)
 	}
-	a.maxkbAdapter = adapter.NewMaxKBAdapter(adapter.MaxKBConfig{BaseURL: normalized, APIKey: apiKey, MaxRetries: 3, EnableDebug: false})
+	a.maxkbAdapter = adapter.NewMaxKBAdapter(adapter.MaxKBConfig{BaseURL: normalized, APIKey: apiKey, Timeout: time.Duration(timeoutSeconds) * time.Second, MaxRetries: 3, EnableDebug: false})
 	a.syncExecutor.SetAdapters(a.maxkbAdapter, a.mineruAdapter)
 	a.maxkbReconciler.SetAdapter(a.maxkbAdapter)
 	return profile.Version, nil
@@ -465,7 +476,7 @@ func (a *Application) CreateKnowledgeBase(ctx context.Context, workspaceID, fold
 }
 
 // ConfigureMaxKB 配置 MaxKB 适配器
-func (a *Application) ConfigureMaxKB(baseURL, apiKey string) error {
+func (a *Application) ConfigureMaxKB(baseURL, apiKey string, timeoutSeconds int) error {
 	normalized, err := credential.ValidateBaseURL(baseURL)
 	if err != nil {
 		return err
@@ -473,8 +484,11 @@ func (a *Application) ConfigureMaxKB(baseURL, apiKey string) error {
 	if strings.TrimSpace(apiKey) == "" || credential.IsMasked(apiKey) {
 		return fmt.Errorf("MaxKB API key is required")
 	}
+	if timeoutSeconds < adapter.MinMaxKBTimeoutSeconds || timeoutSeconds > adapter.MaxMaxKBTimeoutSeconds {
+		return fmt.Errorf("MaxKB timeout must be between %d and %d seconds", adapter.MinMaxKBTimeoutSeconds, adapter.MaxMaxKBTimeoutSeconds)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := a.db.Exec(`UPDATE system_settings SET maxkb_base_url=?,maxkb_normalized_base_url=?,maxkb_validation_success=0,maxkb_version='',maxkb_version_display='',updated_at=? WHERE id=1`, normalized, normalized, now); err != nil {
+	if _, err := a.db.Exec(`UPDATE system_settings SET maxkb_base_url=?,maxkb_normalized_base_url=?,maxkb_timeout_seconds=?,maxkb_validation_success=0,maxkb_version='',maxkb_version_display='',updated_at=? WHERE id=1`, normalized, normalized, timeoutSeconds, now); err != nil {
 		return fmt.Errorf("persist MaxKB configuration: %w", err)
 	}
 	// Saving a changed configuration creates a draft. It must not be usable

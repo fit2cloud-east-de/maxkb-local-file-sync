@@ -22,17 +22,18 @@ func NewFileAPI(app *app.Application) *FileAPI {
 
 // FileDTO 文件 DTO
 type FileDTO struct {
-	FileID         string `json:"fileId"`
-	FolderID       string `json:"folderId"`
-	RelativePath   string `json:"relativePath"`
-	FileStatus     string `json:"fileStatus"`
-	ObservedMD5    string `json:"observedMd5"`
-	LastSuccessMD5 string `json:"lastSuccessMd5"`
-	RemoteDocID    string `json:"remoteDocId"`
-	LastSyncedAt   string `json:"lastSyncedAt,omitempty"`
-	LastCheckedAt  string `json:"lastCheckedAt,omitempty"`
-	CreatedAt      string `json:"createdAt"`
-	UpdatedAt      string `json:"updatedAt"`
+	FileID                string `json:"fileId"`
+	FolderID              string `json:"folderId"`
+	RelativePath          string `json:"relativePath"`
+	FileStatus            string `json:"fileStatus"`
+	ObservedMD5           string `json:"observedMd5"`
+	LastSuccessMD5        string `json:"lastSuccessMd5"`
+	LastSuccessUsedMinerU bool   `json:"lastSuccessUsedMinerU"`
+	RemoteDocID           string `json:"remoteDocId"`
+	LastSyncedAt          string `json:"lastSyncedAt,omitempty"`
+	LastCheckedAt         string `json:"lastCheckedAt,omitempty"`
+	CreatedAt             string `json:"createdAt"`
+	UpdatedAt             string `json:"updatedAt"`
 }
 
 // ListFiles 列出文件夹下的所有文件
@@ -148,15 +149,16 @@ type FileStatsDTO struct {
 // toFileDTO 转换为文件 DTO
 func toFileDTO(file *repository.SyncFile) *FileDTO {
 	dto := &FileDTO{
-		FileID:         file.FileID,
-		FolderID:       file.FolderID,
-		RelativePath:   file.RelativePath,
-		FileStatus:     string(file.FileStatus),
-		ObservedMD5:    file.ObservedMD5,
-		LastSuccessMD5: file.LastSuccessMD5,
-		RemoteDocID:    file.RemoteDocID,
-		CreatedAt:      file.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:      file.UpdatedAt.Format(time.RFC3339),
+		FileID:                file.FileID,
+		FolderID:              file.FolderID,
+		RelativePath:          file.RelativePath,
+		FileStatus:            string(file.FileStatus),
+		ObservedMD5:           file.ObservedMD5,
+		LastSuccessMD5:        file.LastSuccessMD5,
+		LastSuccessUsedMinerU: file.LastSuccessUsedMinerU,
+		RemoteDocID:           file.RemoteDocID,
+		CreatedAt:             file.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:             file.UpdatedAt.Format(time.RFC3339),
 	}
 
 	if file.LastSyncedAt != nil {

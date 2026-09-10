@@ -40,8 +40,8 @@ func (s *MinerUArtifactStore) SetSystemSettingsRepository(repo repository.System
 	s.settingsProvider = repo
 }
 
-// Persist copies the opaque MinerU result ZIP to the configured result
-// directory without extracting or rewriting it. The final layout is:
+// Persist copies the normalized MinerU result ZIP to the configured result
+// directory without further extracting or rewriting it. The final layout is:
 //
 //	{root}/{safe task name}/{safe batch id}/{source relative directory}/{source name}/
 //

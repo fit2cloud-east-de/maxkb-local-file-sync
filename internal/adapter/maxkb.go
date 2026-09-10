@@ -18,6 +18,36 @@ type MaxKBConfig struct {
 // MaxKBErrorType is a stable, user-facing classification for adapter failures.
 // The adapter deliberately does not translate undocumented business codes into
 // a success state; callers can inspect Code and Message for diagnostics.
+type MaxKBOperation string
+
+const (
+	MaxKBOperationUpload MaxKBOperation = "upload"
+	MaxKBOperationSplit  MaxKBOperation = "split"
+	MaxKBOperationCreate MaxKBOperation = "create"
+	MaxKBOperationDelete MaxKBOperation = "delete"
+)
+
+// MaxKBOperationError preserves the adapter-known stage without making the
+// service layer infer a stage from an error string.
+type MaxKBOperationError struct {
+	Operation MaxKBOperation
+	Err       error
+}
+
+func (e *MaxKBOperationError) Error() string {
+	if e == nil || e.Err == nil {
+		return "MaxKB operation failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *MaxKBOperationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 type MaxKBErrorType string
 
 const (
@@ -229,7 +259,11 @@ type Paragraph struct {
 type SmartSplitResult struct {
 	Name         string
 	SourceFileID string
-	Paragraphs   []Paragraph
+	// DocumentID is populated when MaxKB's split endpoint has already created
+	// the knowledge-base document. In that response shape the executor must not
+	// call batch_create again.
+	DocumentID string
+	Paragraphs []Paragraph
 }
 
 type OSSUploadResult struct {

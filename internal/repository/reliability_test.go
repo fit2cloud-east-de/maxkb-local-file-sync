@@ -195,6 +195,45 @@ func TestReliabilityStartAttemptAndReconcile(t *testing.T) {
 	}
 }
 
+func TestCommitSyncSuccessPersistsMinerUProcessingRoute(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		minerUTaskID string
+		want         int
+	}{
+		{name: "direct upload", want: 0},
+		{name: "MinerU upload", minerUTaskID: "mineru-task-1", want: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, store, task, files := reliabilityFixture(t)
+			if err := store.CreateRunPlan(ctx, task, files); err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := store.StartOrResumeAttempt(ctx, files[0].RunFileID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt.MinerUTaskID = tt.minerUTaskID
+			if err := store.SaveAttempt(ctx, attempt); err != nil {
+				t.Fatal(err)
+			}
+			md5 := "0123456789abcdef0123456789abcdef"
+			if err := store.CommitSyncSuccess(ctx, files[0].RunFileID, "document-1", md5, md5); err != nil {
+				t.Fatal(err)
+			}
+
+			var got int
+			if err := database.QueryRow(`SELECT last_success_used_mineru FROM sync_files WHERE file_id=?`, files[0].FileID).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("last_success_used_mineru = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveReconcileMarkFailedKeepsStoppedRunTerminal(t *testing.T) {
 	ctx := context.Background()
 	database, store, task, files := reliabilityFixture(t)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -80,8 +81,38 @@ func TestSmartSplitTimeoutRequiresReconciliation(t *testing.T) {
 	if !smartSplitRequiresReconcile(&adapter.MaxKBError{Type: adapter.MaxKBErrorTimeout}) {
 		t.Fatal("timeout should require reconciliation")
 	}
+	for _, tc := range []struct {
+		name string
+		err  *adapter.MaxKBError
+	}{
+		{name: "unreachable", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorUnreachable}},
+		{name: "tls", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorTLS}},
+		{name: "incompatible response", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorIncompatible, StatusCode: 200}},
+		{name: "rate limited", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorBusiness, StatusCode: 429}},
+		{name: "gateway failure", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorBusiness, StatusCode: 502}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !smartSplitRequiresReconcile(tc.err) {
+				t.Fatalf("%s should require reconciliation", tc.name)
+			}
+		})
+	}
 	if smartSplitRequiresReconcile(&adapter.MaxKBError{Type: adapter.MaxKBErrorIncompatible}) {
-		t.Fatal("incompatible response should remain a normal failure")
+		t.Fatal("incompatible response without an HTTP result should remain a normal failure")
+	}
+	for _, tc := range []struct {
+		name string
+		err  *adapter.MaxKBError
+	}{
+		{name: "authentication", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorInvalidAPIKey, StatusCode: 401}},
+		{name: "permission", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorPermissionDenied, StatusCode: 403}},
+		{name: "validation", err: &adapter.MaxKBError{Type: adapter.MaxKBErrorBusiness, StatusCode: 400}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if smartSplitRequiresReconcile(tc.err) {
+				t.Fatalf("%s should remain a confirmed failure", tc.name)
+			}
+		})
 	}
 }
 
@@ -121,15 +152,16 @@ func (s *completedMinerUStub) DownloadResult(context.Context, string) ([]byte, e
 	return append([]byte(nil), s.result...), nil
 }
 
-func TestWaitMinerUKeepsDownloadedZIPOpaque(t *testing.T) {
+func TestWaitMinerUNormalizesDownloadedZIPForMaxKB(t *testing.T) {
 	t.Parallel()
 
 	var archive bytes.Buffer
 	writer := zip.NewWriter(&archive)
 	for name, content := range map[string]string{
-		"first.md":         "# first\n",
-		"nested/second.md": "# second\n",
-		"images/chart.png": "fake-png",
+		"result-root/full.md":           "# full\n",
+		"result-root/images/chart.png":  "fake-png",
+		"result-root/content_list.json": "must be removed",
+		"result-root/origin.docx":       "must be removed",
 	} {
 		entry, err := writer.Create(name)
 		if err != nil {
@@ -164,16 +196,42 @@ func TestWaitMinerUKeepsDownloadedZIPOpaque(t *testing.T) {
 	if got := filepath.Base(resultPath); got != "report.zip" {
 		t.Fatalf("result filename = %q, want report.zip", got)
 	}
-	got, err := os.ReadFile(resultPath)
+	entries := zipEntries(t, resultPath)
+	want := map[string]string{
+		"result-root/full.md":          "# full\n",
+		"result-root/images/":          "",
+		"result-root/images/chart.png": "fake-png",
+	}
+	if !reflect.DeepEqual(entries, want) {
+		t.Fatalf("normalized ZIP entries = %#v, want %#v", entries, want)
+	}
+}
+
+func zipEntries(t *testing.T, archivePath string) map[string]string {
+	t.Helper()
+	reader, err := zip.OpenReader(archivePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got, archive.Bytes()) {
-		t.Fatal("downloaded ZIP was modified before MaxKB upload")
+	defer reader.Close()
+	entries := make(map[string]string, len(reader.File))
+	for _, entry := range reader.File {
+		if entry.FileInfo().IsDir() {
+			entries[entry.Name] = ""
+			continue
+		}
+		input, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := io.ReadAll(input)
+		_ = input.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries[entry.Name] = string(content)
 	}
-	if _, err := os.Stat(filepath.Join(resultRoot, "extracted")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("MinerU ZIP was unexpectedly extracted: %v", err)
-	}
+	return entries
 }
 
 func TestWaitMinerURejectsEmptyResultZIP(t *testing.T) {
@@ -215,5 +273,42 @@ func TestMinerUResultArchiveNameIsSafeAndAlwaysZIP(t *testing.T) {
 	unsafe := mineruResultArchiveName("../unsafe:name?.pdf")
 	if !strings.HasPrefix(unsafe, "unsafe_name_-") || !strings.HasSuffix(unsafe, ".zip") || strings.ContainsAny(unsafe, `/:?`) {
 		t.Fatalf("unsafe archive name was not sanitized: %q", unsafe)
+	}
+}
+
+func TestMaxKBDeleteFailureClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantCode   string
+		wantReconc bool
+	}{
+		{
+			name:     "permission failure is confirmed",
+			err:      &adapter.MaxKBOperationError{Operation: adapter.MaxKBOperationDelete, Err: &adapter.MaxKBError{Type: adapter.MaxKBErrorPermissionDenied, StatusCode: 403}},
+			wantCode: "MAXKB_DELETE_FAILED",
+		},
+		{
+			name:       "timeout is uncertain",
+			err:        &adapter.MaxKBOperationError{Operation: adapter.MaxKBOperationDelete, Err: &adapter.MaxKBError{Type: adapter.MaxKBErrorTimeout}},
+			wantCode:   "MAXKB_DELETE_UNKNOWN",
+			wantReconc: true,
+		},
+		{
+			name:       "server error is uncertain",
+			err:        &adapter.MaxKBOperationError{Operation: adapter.MaxKBOperationDelete, Err: &adapter.MaxKBError{Type: adapter.MaxKBErrorBusiness, StatusCode: 502}},
+			wantCode:   "MAXKB_DELETE_UNKNOWN",
+			wantReconc: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotCode, gotReconcile := maxKBDeleteFailure(tc.err)
+			if gotCode != tc.wantCode || gotReconcile != tc.wantReconc {
+				t.Fatalf("maxKBDeleteFailure() = %q, %v; want %q, %v", gotCode, gotReconcile, tc.wantCode, tc.wantReconc)
+			}
+		})
 	}
 }

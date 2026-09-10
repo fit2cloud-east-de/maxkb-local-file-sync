@@ -99,6 +99,11 @@ type PreviewMatchRequest struct {
 // PreviewMatchResult 预览匹配结果
 type PreviewMatchResult struct {
 	TotalFiles       int               `json:"totalFiles"`
+	MatchedCount     int               `json:"matchedCount"`
+	ExcludedCount    int               `json:"excludedCount"`
+	MinerUCount      int               `json:"mineruCount"`
+	RegularCount     int               `json:"regularCount"`
+	PreviewLimit     int               `json:"previewLimit"`
 	MatchedFiles     []string          `json:"matchedFiles"`
 	ExcludedFiles    []string          `json:"excludedFiles"`
 	ExclusionReasons map[string]string `json:"exclusionReasons,omitempty"`
@@ -318,6 +323,13 @@ func (api *FolderAPI) ListFolders() ([]*FolderDTO, error) {
 // ScanFolder 扫描文件夹
 func (api *FolderAPI) ScanFolder(folderID string) (*ScanResultDTO, error) {
 	ctx := context.Background()
+	active, err := api.app.ReliabilityStore().HasActiveRun(ctx, folderID)
+	if err != nil {
+		return nil, err
+	}
+	if active {
+		return nil, fmt.Errorf("同步任务正在处理中，请等待当前批次完成后再执行")
+	}
 
 	// 一次扫描同时返回预览差异并持久化状态。先 DetectChanges 再重新
 	// ScanFolder 会把刚创建/更新的记录看成 unchanged，导致 UI 显示错误。
@@ -354,9 +366,12 @@ func (api *FolderAPI) PreviewMatch(req PreviewMatchRequest) (*PreviewMatchResult
 		return nil, err
 	}
 	return &PreviewMatchResult{
-		TotalFiles: preview.TotalFiles, MatchedFiles: preview.MatchedFiles,
-		ExcludedFiles: preview.ExcludedFiles, ExclusionReasons: preview.ExclusionReasons,
-		MinerUFiles: preview.MinerUFiles, RegularFiles: preview.RegularFiles,
+		TotalFiles: preview.TotalFiles, MatchedCount: preview.MatchedCount,
+		ExcludedCount: preview.ExcludedCount, MinerUCount: preview.MinerUCount,
+		RegularCount: preview.RegularCount, PreviewLimit: preview.PreviewLimit,
+		MatchedFiles: preview.MatchedFiles, ExcludedFiles: preview.ExcludedFiles,
+		ExclusionReasons: preview.ExclusionReasons, MinerUFiles: preview.MinerUFiles,
+		RegularFiles: preview.RegularFiles,
 	}, nil
 }
 

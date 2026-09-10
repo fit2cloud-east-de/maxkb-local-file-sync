@@ -7,22 +7,24 @@ import (
 	"time"
 
 	"maxkb-local-file-sync/internal/infra/db"
+	"maxkb-local-file-sync/internal/infra/file"
 	"maxkb-local-file-sync/internal/pkg/types"
 )
 
 // SyncFile 同步文件实体
 type SyncFile struct {
-	FileID         string
-	FolderID       string
-	RelativePath   string
-	FileStatus     types.FileStatus
-	ObservedMD5    string
-	LastSuccessMD5 string
-	RemoteDocID    string
-	LastSyncedAt   *time.Time
-	LastCheckedAt  *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	FileID                string
+	FolderID              string
+	RelativePath          string
+	FileStatus            types.FileStatus
+	ObservedMD5           string
+	LastSuccessMD5        string
+	LastSuccessUsedMinerU bool
+	RemoteDocID           string
+	LastSyncedAt          *time.Time
+	LastCheckedAt         *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // SyncFileRepository 同步文件仓储接口
@@ -34,7 +36,7 @@ type SyncFileRepository interface {
 	// 更新
 	Update(ctx context.Context, file *SyncFile) error
 	UpdateStatus(ctx context.Context, fileID string, status types.FileStatus) error
-	UpdateMD5(ctx context.Context, fileID, observedMD5, lastSuccessMD5 string) error
+	UpdateMD5(ctx context.Context, fileID, observedMD5, lastSuccessMD5 string, usedMinerU bool) error
 	UpdateRemoteDocID(ctx context.Context, fileID, remoteDocID string) error
 
 	// 删除
@@ -63,84 +65,140 @@ func NewSyncFileRepository(database *db.DB) SyncFileRepository {
 	return &syncFileRepo{db: database}
 }
 
-// Create 创建同步文件
-func (r *syncFileRepo) Create(ctx context.Context, file *SyncFile) error {
+// Create 创建同步文件。
+//
+// 扫描和队列恢复可能在同一时间观察到同一个本地路径。这里使用
+// INSERT ... ON CONFLICT DO NOTHING，再按规范化路径更新可变观察字段，
+// 使创建操作幂等，同时保留已有的远端文档映射和最近一次成功 MD5。
+func (r *syncFileRepo) Create(ctx context.Context, syncFile *SyncFile) error {
+	if syncFile == nil {
+		return fmt.Errorf("sync file is required")
+	}
+	normalizedPath := normalizeSyncFilePath(syncFile.RelativePath)
+	if normalizedPath == "" {
+		return fmt.Errorf("sync file relative path is required")
+	}
 	query := `
 		INSERT INTO sync_files (
-			file_id, folder_id, relative_path, file_status,
-			observed_md5, last_success_md5, remote_doc_id,
+			file_id, folder_id, relative_path, normalized_relative_path, file_status,
+			observed_md5, last_success_md5, last_success_used_mineru, remote_doc_id,
 			last_synced_at, last_checked_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT DO NOTHING
 	`
-
-	_, err := r.db.Exec(query,
-		file.FileID,
-		file.FolderID,
-		file.RelativePath,
-		string(file.FileStatus),
-		file.ObservedMD5,
-		file.LastSuccessMD5,
-		file.RemoteDocID,
-		timeToString(file.LastSyncedAt),
-		timeToString(file.LastCheckedAt),
-		file.CreatedAt.Format(time.RFC3339),
-		file.UpdatedAt.Format(time.RFC3339),
+	_, err := r.db.Conn().ExecContext(ctx, query,
+		syncFile.FileID,
+		syncFile.FolderID,
+		syncFile.RelativePath,
+		normalizedPath,
+		string(syncFile.FileStatus),
+		syncFile.ObservedMD5,
+		syncFile.LastSuccessMD5,
+		boolToInt(syncFile.LastSuccessUsedMinerU),
+		syncFile.RemoteDocID,
+		timeToString(syncFile.LastSyncedAt),
+		timeToString(syncFile.LastCheckedAt),
+		syncFile.CreatedAt.Format(time.RFC3339),
+		syncFile.UpdatedAt.Format(time.RFC3339),
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to create sync file: %w", err)
 	}
-
+	if err := r.refreshObservedFields(ctx, syncFile, normalizedPath); err != nil {
+		return err
+	}
 	return nil
 }
 
-// BatchCreate 批量创建同步文件
+// refreshObservedFields updates only data observed during the current scan.
+// RemoteDocID and LastSuccessMD5 are intentionally not touched on conflict.
+func (r *syncFileRepo) refreshObservedFields(ctx context.Context, syncFile *SyncFile, normalizedPath string) error {
+	_, err := r.db.Conn().ExecContext(ctx, `
+		UPDATE sync_files
+		SET relative_path = ?, normalized_relative_path = ?,
+			observed_md5 = CASE WHEN ? <> '' THEN ? ELSE observed_md5 END,
+			last_checked_at = COALESCE(?, last_checked_at),
+			updated_at = ?
+		WHERE folder_id = ? AND normalized_relative_path = ?
+	`, syncFile.RelativePath, normalizedPath,
+		syncFile.ObservedMD5, syncFile.ObservedMD5,
+		timeToString(syncFile.LastCheckedAt), time.Now().Format(time.RFC3339),
+		syncFile.FolderID, normalizedPath)
+	if err != nil {
+		return fmt.Errorf("failed to refresh sync file observation: %w", err)
+	}
+	return nil
+}
+
+// BatchCreate 批量创建同步文件。每一行都沿用 Create 的幂等语义，
+// 但在单个事务内完成，避免大目录首次同步因为重复观察同一路径而整体失败。
 func (r *syncFileRepo) BatchCreate(ctx context.Context, files []*SyncFile) error {
 	if len(files) == 0 {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-	tx, err := r.db.BeginTx()
+	tx, err := r.db.Conn().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`
+	insertStmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO sync_files (
-			file_id, folder_id, relative_path, file_status,
-			observed_md5, last_success_md5, remote_doc_id,
+			file_id, folder_id, relative_path, normalized_relative_path, file_status,
+			observed_md5, last_success_md5, last_success_used_mineru, remote_doc_id,
 			last_synced_at, last_checked_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT DO NOTHING
 	`)
 	if err != nil {
-		return fmt.Errorf("failed to prepare statement: %w", err)
+		return fmt.Errorf("failed to prepare sync file insert: %w", err)
 	}
-	defer stmt.Close()
+	defer insertStmt.Close()
 
-	for _, file := range files {
-		_, err := stmt.Exec(
-			file.FileID,
-			file.FolderID,
-			file.RelativePath,
-			string(file.FileStatus),
-			file.ObservedMD5,
-			file.LastSuccessMD5,
-			file.RemoteDocID,
-			timeToString(file.LastSyncedAt),
-			timeToString(file.LastCheckedAt),
-			file.CreatedAt.Format(time.RFC3339),
-			file.UpdatedAt.Format(time.RFC3339),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert file %s: %w", file.FileID, err)
+	updateStmt, err := tx.PrepareContext(ctx, `
+		UPDATE sync_files
+		SET relative_path = ?, normalized_relative_path = ?,
+			observed_md5 = CASE WHEN ? <> '' THEN ? ELSE observed_md5 END,
+			last_checked_at = COALESCE(?, last_checked_at),
+			updated_at = ?
+		WHERE folder_id = ? AND normalized_relative_path = ?
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare sync file observation update: %w", err)
+	}
+	defer updateStmt.Close()
+
+	for _, syncFile := range files {
+		if syncFile == nil {
+			continue
+		}
+		normalizedPath := normalizeSyncFilePath(syncFile.RelativePath)
+		if normalizedPath == "" {
+			return fmt.Errorf("sync file relative path is required")
+		}
+		if _, err := insertStmt.ExecContext(ctx,
+			syncFile.FileID, syncFile.FolderID, syncFile.RelativePath, normalizedPath,
+			string(syncFile.FileStatus), syncFile.ObservedMD5, syncFile.LastSuccessMD5,
+			boolToInt(syncFile.LastSuccessUsedMinerU), syncFile.RemoteDocID, timeToString(syncFile.LastSyncedAt),
+			timeToString(syncFile.LastCheckedAt), syncFile.CreatedAt.Format(time.RFC3339),
+			syncFile.UpdatedAt.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("failed to insert file %s: %w", syncFile.FileID, err)
+		}
+		if _, err := updateStmt.ExecContext(ctx,
+			syncFile.RelativePath, normalizedPath, syncFile.ObservedMD5, syncFile.ObservedMD5,
+			timeToString(syncFile.LastCheckedAt), time.Now().Format(time.RFC3339),
+			syncFile.FolderID, normalizedPath); err != nil {
+			return fmt.Errorf("failed to refresh file %s: %w", syncFile.FileID, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
-
 	return nil
 }
 
@@ -148,17 +206,19 @@ func (r *syncFileRepo) BatchCreate(ctx context.Context, files []*SyncFile) error
 func (r *syncFileRepo) Update(ctx context.Context, file *SyncFile) error {
 	query := `
 		UPDATE sync_files SET
-			relative_path = ?, file_status = ?,
-			observed_md5 = ?, last_success_md5 = ?, remote_doc_id = ?,
+			relative_path = ?, normalized_relative_path = ?, file_status = ?,
+			observed_md5 = ?, last_success_md5 = ?, last_success_used_mineru = ?, remote_doc_id = ?,
 			last_synced_at = ?, last_checked_at = ?, updated_at = ?
 		WHERE file_id = ?
 	`
 
 	result, err := r.db.Exec(query,
 		file.RelativePath,
+		normalizeSyncFilePath(file.RelativePath),
 		string(file.FileStatus),
 		file.ObservedMD5,
 		file.LastSuccessMD5,
+		boolToInt(file.LastSuccessUsedMinerU),
 		file.RemoteDocID,
 		timeToString(file.LastSyncedAt),
 		timeToString(file.LastCheckedAt),
@@ -204,14 +264,14 @@ func (r *syncFileRepo) UpdateStatus(ctx context.Context, fileID string, status t
 }
 
 // UpdateMD5 更新文件 MD5
-func (r *syncFileRepo) UpdateMD5(ctx context.Context, fileID, observedMD5, lastSuccessMD5 string) error {
+func (r *syncFileRepo) UpdateMD5(ctx context.Context, fileID, observedMD5, lastSuccessMD5 string, usedMinerU bool) error {
 	query := `
 		UPDATE sync_files SET
-			observed_md5 = ?, last_success_md5 = ?, updated_at = ?
+			observed_md5 = ?, last_success_md5 = ?, last_success_used_mineru = ?, updated_at = ?
 		WHERE file_id = ?
 	`
 
-	result, err := r.db.Exec(query, observedMD5, lastSuccessMD5, time.Now().Format(time.RFC3339), fileID)
+	result, err := r.db.Exec(query, observedMD5, lastSuccessMD5, boolToInt(usedMinerU), time.Now().Format(time.RFC3339), fileID)
 	if err != nil {
 		return fmt.Errorf("failed to update file MD5: %w", err)
 	}
@@ -286,7 +346,7 @@ func (r *syncFileRepo) DeleteByFolder(ctx context.Context, folderID string) erro
 func (r *syncFileRepo) GetByID(ctx context.Context, fileID string) (*SyncFile, error) {
 	query := `
 		SELECT file_id, folder_id, relative_path, file_status,
-			observed_md5, last_success_md5, remote_doc_id,
+			observed_md5, last_success_md5, last_success_used_mineru, remote_doc_id,
 			last_synced_at, last_checked_at, created_at, updated_at
 		FROM sync_files
 		WHERE file_id = ?
@@ -299,20 +359,20 @@ func (r *syncFileRepo) GetByID(ctx context.Context, fileID string) (*SyncFile, e
 func (r *syncFileRepo) GetByPath(ctx context.Context, folderID, relativePath string) (*SyncFile, error) {
 	query := `
 		SELECT file_id, folder_id, relative_path, file_status,
-			observed_md5, last_success_md5, remote_doc_id,
+			observed_md5, last_success_md5, last_success_used_mineru, remote_doc_id,
 			last_synced_at, last_checked_at, created_at, updated_at
 		FROM sync_files
-		WHERE folder_id = ? AND relative_path = ?
+		WHERE folder_id = ? AND normalized_relative_path = ?
 	`
 
-	return r.scanFile(r.db.QueryRow(query, folderID, relativePath))
+	return r.scanFile(r.db.QueryRow(query, folderID, normalizeSyncFilePath(relativePath)))
 }
 
 // ListByFolder 列出文件夹下所有文件
 func (r *syncFileRepo) ListByFolder(ctx context.Context, folderID string) ([]*SyncFile, error) {
 	query := `
 		SELECT file_id, folder_id, relative_path, file_status,
-			observed_md5, last_success_md5, remote_doc_id,
+			observed_md5, last_success_md5, last_success_used_mineru, remote_doc_id,
 			last_synced_at, last_checked_at, created_at, updated_at
 		FROM sync_files
 		WHERE folder_id = ?
@@ -332,7 +392,7 @@ func (r *syncFileRepo) ListByFolder(ctx context.Context, folderID string) ([]*Sy
 func (r *syncFileRepo) ListByStatus(ctx context.Context, folderID string, status types.FileStatus) ([]*SyncFile, error) {
 	query := `
 		SELECT file_id, folder_id, relative_path, file_status,
-			observed_md5, last_success_md5, remote_doc_id,
+			observed_md5, last_success_md5, last_success_used_mineru, remote_doc_id,
 			last_synced_at, last_checked_at, created_at, updated_at
 		FROM sync_files
 		WHERE folder_id = ? AND file_status = ?
@@ -352,7 +412,7 @@ func (r *syncFileRepo) ListByStatus(ctx context.Context, folderID string, status
 func (r *syncFileRepo) ListPendingChanges(ctx context.Context, folderID string) ([]*SyncFile, error) {
 	query := `
 		SELECT file_id, folder_id, relative_path, file_status,
-			observed_md5, last_success_md5, remote_doc_id,
+			observed_md5, last_success_md5, last_success_used_mineru, remote_doc_id,
 			last_synced_at, last_checked_at, created_at, updated_at
 		FROM sync_files
 		WHERE folder_id = ? AND file_status IN (?, ?, ?)
@@ -402,6 +462,7 @@ func (r *syncFileRepo) CountByStatus(ctx context.Context, folderID string, statu
 func (r *syncFileRepo) scanFile(row *sql.Row) (*SyncFile, error) {
 	file := &SyncFile{}
 	var fileStatus string
+	var lastSuccessUsedMinerU int
 	var lastSyncedAt, lastCheckedAt, createdAt, updatedAt sql.NullString
 
 	err := row.Scan(
@@ -411,6 +472,7 @@ func (r *syncFileRepo) scanFile(row *sql.Row) (*SyncFile, error) {
 		&fileStatus,
 		&file.ObservedMD5,
 		&file.LastSuccessMD5,
+		&lastSuccessUsedMinerU,
 		&file.RemoteDocID,
 		&lastSyncedAt,
 		&lastCheckedAt,
@@ -426,6 +488,7 @@ func (r *syncFileRepo) scanFile(row *sql.Row) (*SyncFile, error) {
 	}
 
 	file.FileStatus = types.FileStatus(fileStatus)
+	file.LastSuccessUsedMinerU = intToBool(lastSuccessUsedMinerU)
 	file.LastSyncedAt = stringToTime(lastSyncedAt)
 	file.LastCheckedAt = stringToTime(lastCheckedAt)
 	file.CreatedAt, _ = time.Parse(time.RFC3339, createdAt.String)
@@ -441,6 +504,7 @@ func (r *syncFileRepo) scanFiles(rows *sql.Rows) ([]*SyncFile, error) {
 	for rows.Next() {
 		file := &SyncFile{}
 		var fileStatus string
+		var lastSuccessUsedMinerU int
 		var lastSyncedAt, lastCheckedAt, createdAt, updatedAt sql.NullString
 
 		err := rows.Scan(
@@ -450,6 +514,7 @@ func (r *syncFileRepo) scanFiles(rows *sql.Rows) ([]*SyncFile, error) {
 			&fileStatus,
 			&file.ObservedMD5,
 			&file.LastSuccessMD5,
+			&lastSuccessUsedMinerU,
 			&file.RemoteDocID,
 			&lastSyncedAt,
 			&lastCheckedAt,
@@ -461,6 +526,7 @@ func (r *syncFileRepo) scanFiles(rows *sql.Rows) ([]*SyncFile, error) {
 		}
 
 		file.FileStatus = types.FileStatus(fileStatus)
+		file.LastSuccessUsedMinerU = intToBool(lastSuccessUsedMinerU)
 		file.LastSyncedAt = stringToTime(lastSyncedAt)
 		file.LastCheckedAt = stringToTime(lastCheckedAt)
 		file.CreatedAt, _ = time.Parse(time.RFC3339, createdAt.String)
@@ -474,6 +540,11 @@ func (r *syncFileRepo) scanFiles(rows *sql.Rows) ([]*SyncFile, error) {
 	}
 
 	return files, nil
+}
+
+// normalizeSyncFilePath keeps repository identity independent of the host path separator.
+func normalizeSyncFilePath(relativePath string) string {
+	return file.NormalizeRelativePath(relativePath)
 }
 
 // 辅助函数

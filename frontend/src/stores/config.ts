@@ -103,7 +103,7 @@ function normalizeArtifactConfig(value: unknown): MinerUArtifactConfigDTO {
 }
 
 export const useConfigStore = defineStore('config', () => {
-  const maxKBConfig = ref<MaxKBConfigDTO>({ baseUrl: '', apiKey: '' })
+  const maxKBConfig = ref<MaxKBConfigDTO>({ baseUrl: '', apiKey: '', timeoutSeconds: 30 })
   const minerUConfig = ref<MinerUConfigDTO>({ enabled: false, baseUrl: '', apiKey: '', mode: 'online' })
   const minerUArtifactConfig = ref<MinerUArtifactConfigDTO>({ ...DEFAULT_MINERU_ARTIFACT_CONFIG })
   const minerUArtifactCapabilities = ref({ read: false, write: false, cleanup: false })

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -95,8 +96,8 @@ func (r *scannerFileRepo) UpdateStatus(_ context.Context, fileID string, status 
 	}
 	return nil
 }
-func (r *scannerFileRepo) UpdateMD5(context.Context, string, string, string) error { return nil }
-func (r *scannerFileRepo) UpdateRemoteDocID(context.Context, string, string) error { return nil }
+func (r *scannerFileRepo) UpdateMD5(context.Context, string, string, string, bool) error { return nil }
+func (r *scannerFileRepo) UpdateRemoteDocID(context.Context, string, string) error       { return nil }
 func (r *scannerFileRepo) Delete(_ context.Context, fileID string) error {
 	r.deleted = append(r.deleted, fileID)
 	for path, f := range r.files {
@@ -278,6 +279,127 @@ func TestScanFolderDiffAndUniqueRename(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result.DeletedFiles, []string{"deleted.txt", "old.txt"}) {
 		t.Fatalf("deleted files = %#v", result.DeletedFiles)
+	}
+}
+
+func TestScanFolderTreatsMinerUProcessingRouteChangeAsUpdate(t *testing.T) {
+	tests := []struct {
+		name                  string
+		lastSuccessUsedMinerU bool
+		enableMinerU          bool
+		mineruExtensions      string
+		fileStatus            types.FileStatus
+		wantUpdated           bool
+	}{
+		{
+			name:                  "direct upload changes to MinerU",
+			lastSuccessUsedMinerU: false,
+			enableMinerU:          true,
+			mineruExtensions:      ".pdf",
+			fileStatus:            types.FileStatusSynced,
+			wantUpdated:           true,
+		},
+		{
+			name:                  "MinerU changes to direct upload",
+			lastSuccessUsedMinerU: true,
+			enableMinerU:          true,
+			mineruExtensions:      "",
+			fileStatus:            types.FileStatusSynced,
+			wantUpdated:           true,
+		},
+		{
+			name:                  "direct upload route is unchanged",
+			lastSuccessUsedMinerU: false,
+			enableMinerU:          true,
+			mineruExtensions:      "",
+			fileStatus:            types.FileStatusSynced,
+			wantUpdated:           false,
+		},
+		{
+			name:                  "MinerU route is unchanged",
+			lastSuccessUsedMinerU: true,
+			enableMinerU:          true,
+			mineruExtensions:      ".pdf",
+			fileStatus:            types.FileStatusSynced,
+			wantUpdated:           false,
+		},
+		{
+			name:                  "queued corrective replacement remains an update",
+			lastSuccessUsedMinerU: true,
+			enableMinerU:          true,
+			mineruExtensions:      ".pdf",
+			fileStatus:            types.FileStatusStaleRemoteExists,
+			wantUpdated:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeScannerFile(t, root, "manual.pdf", "unchanged")
+			folder := &repository.SyncFolder{
+				FolderID:             "folder-route",
+				LocalPath:            root,
+				EnableMinerU:         tt.enableMinerU,
+				MinerUFileExtensions: tt.mineruExtensions,
+			}
+			existing := &repository.SyncFile{
+				FileID:                "file-route",
+				FolderID:              folder.FolderID,
+				RelativePath:          "manual.pdf",
+				FileStatus:            tt.fileStatus,
+				LastSuccessMD5:        md5ForTest(t, "unchanged"),
+				LastSuccessUsedMinerU: tt.lastSuccessUsedMinerU,
+				RemoteDocID:           "document-old",
+			}
+			scanner, _ := newTestScanner(t, root, folder, existing)
+
+			result, err := scanner.ScanFolder(context.Background(), folder.FolderID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantUpdated {
+				if !reflect.DeepEqual(result.UpdatedFiles, []string{"manual.pdf"}) || len(result.UnchangedFiles) != 0 {
+					t.Fatalf("route change diff = updated:%#v unchanged:%#v", result.UpdatedFiles, result.UnchangedFiles)
+				}
+				return
+			}
+			if !reflect.DeepEqual(result.UnchangedFiles, []string{"manual.pdf"}) || len(result.UpdatedFiles) != 0 {
+				t.Fatalf("unchanged route diff = updated:%#v unchanged:%#v", result.UpdatedFiles, result.UnchangedFiles)
+			}
+		})
+	}
+}
+
+func TestDetectChangesMarksMinerURouteChangeForRemoteReplacement(t *testing.T) {
+	root := t.TempDir()
+	writeScannerFile(t, root, "manual.pdf", "unchanged")
+	folder := &repository.SyncFolder{
+		FolderID:             "folder-route-replacement",
+		LocalPath:            root,
+		EnableMinerU:         true,
+		MinerUFileExtensions: ".pdf",
+	}
+	existing := &repository.SyncFile{
+		FileID:                "file-route-replacement",
+		FolderID:              folder.FolderID,
+		RelativePath:          "manual.pdf",
+		FileStatus:            types.FileStatusSynced,
+		LastSuccessMD5:        md5ForTest(t, "unchanged"),
+		LastSuccessUsedMinerU: false,
+		RemoteDocID:           "document-old",
+	}
+	scanner, repo := newTestScanner(t, root, folder, existing)
+
+	result, err := scanner.DetectChangesWithResult(context.Background(), folder.FolderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.UpdatedFiles, []string{"manual.pdf"}) {
+		t.Fatalf("updated files = %#v", result.UpdatedFiles)
+	}
+	if got := repo.statuses[existing.FileID]; got != types.FileStatusStaleRemoteExists {
+		t.Fatalf("route change status = %q, want %q", got, types.FileStatusStaleRemoteExists)
 	}
 }
 
@@ -466,6 +588,37 @@ func TestPreviewMatchMinerUEmptyExtensionsConvertsUnsupportedOnly(t *testing.T) 
 	}
 	if !reflect.DeepEqual(preview.RegularFiles, []string{"readme.md"}) {
 		t.Fatalf("regular files = %#v", preview.RegularFiles)
+	}
+}
+
+func TestPreviewMatchLimitsReturnedDetailsButKeepsCompleteCounts(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 120; i++ {
+		writeScannerFile(t, root, fmt.Sprintf("docs/document-%03d.md", i), "markdown")
+		writeScannerFile(t, root, fmt.Sprintf("slides/presentation-%03d.pptx", i), "slides")
+		writeScannerFile(t, root, fmt.Sprintf("images/image-%03d.png", i), "image")
+	}
+	folder := &repository.SyncFolder{FolderID: "preview-bounded-details", LocalPath: root}
+	scanner, _ := newTestScanner(t, root, folder)
+
+	preview, err := scanner.PreviewMatch(context.Background(), root, "", "", true, []string{".pptx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.TotalFiles != 360 || preview.MatchedCount != 240 || preview.ExcludedCount != 120 {
+		t.Fatalf("complete counts = total:%d matched:%d excluded:%d", preview.TotalFiles, preview.MatchedCount, preview.ExcludedCount)
+	}
+	if preview.MinerUCount != 120 || preview.RegularCount != 120 {
+		t.Fatalf("classification counts = mineru:%d regular:%d", preview.MinerUCount, preview.RegularCount)
+	}
+	if preview.PreviewLimit != 100 || len(preview.MatchedFiles) != 100 || len(preview.ExcludedFiles) != 100 {
+		t.Fatalf("bounded details = limit:%d matched:%d excluded:%d", preview.PreviewLimit, len(preview.MatchedFiles), len(preview.ExcludedFiles))
+	}
+	if len(preview.MinerUFiles)+len(preview.RegularFiles) != len(preview.MatchedFiles) {
+		t.Fatalf("sample classification is incomplete: mineru:%d regular:%d matched:%d", len(preview.MinerUFiles), len(preview.RegularFiles), len(preview.MatchedFiles))
+	}
+	if len(preview.ExclusionReasons) != len(preview.ExcludedFiles) {
+		t.Fatalf("sample exclusion reasons = %d, excluded details = %d", len(preview.ExclusionReasons), len(preview.ExcludedFiles))
 	}
 }
 

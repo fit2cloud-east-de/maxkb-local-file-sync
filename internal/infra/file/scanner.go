@@ -89,6 +89,20 @@ var maxKBDirectUploadExtensions = map[string]struct{}{
 	".zip":      {},
 }
 
+// MinerUSupportedExtensions contains formats confirmed for the internal
+// MinerU 3.4.5 CPU deployment. Keep this list explicit: '*' means all known
+// supported formats, not arbitrary files.
+var minerUSupportedExtensions = map[string]struct{}{
+	".pdf": {}, ".png": {}, ".jpg": {}, ".jpeg": {}, ".bmp": {},
+	".tiff": {}, ".gif": {}, ".webp": {}, ".jp2": {}, ".docx": {},
+	".pptx": {}, ".xlsx": {},
+}
+
+func IsMinerUSupported(path string) bool {
+	_, ok := minerUSupportedExtensions[strings.ToLower(filepath.Ext(path))]
+	return ok
+}
+
 // IsMaxKBDirectUploadSupported 判断文件是否属于 MaxKB 支持直接上传的格式。
 func IsMaxKBDirectUploadSupported(filePath string) bool {
 	_, ok := maxKBDirectUploadExtensions[strings.ToLower(filepath.Ext(filePath))]

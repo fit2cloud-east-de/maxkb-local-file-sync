@@ -23,6 +23,7 @@ const modalError = ref('')
 const kbModalError = ref('')
 const saving = ref(false)
 const syncingId = ref<string | null>(null)
+const activeFolderIds = computed(() => new Set(tasksStore.runningTasks.map(task => task.folderId).filter(Boolean)))
 
 // 工作空间 / 知识库级联数据
 const workspaces = ref<WorkspaceDTO[]>([])
@@ -68,9 +69,11 @@ const showPreview = ref(false)
 const previewLoading = ref(false)
 const previewResult = ref<PreviewMatchResult | null>(null)
 const previewError = ref('')
-// 预览窗口必须和当前任务开关保持一致。即使旧版后端返回了历史
-// MinerU 分类，关闭开关后也不能继续显示 MinerU 标签或计数。
-const previewMineruFiles = computed(() => form.value.enableMinerU ? (previewResult.value?.mineruFiles ?? []) : [])
+// 预览窗口必须和当前任务开关保持一致。使用 Set 避免逐行渲染时反复线性查找。
+const previewMineruFileSet = computed(() => new Set(
+  form.value.enableMinerU ? (previewResult.value?.mineruFiles ?? []) : []
+))
+const previewMineruCount = computed(() => form.value.enableMinerU ? (previewResult.value?.mineruCount ?? 0) : 0)
 
 const mineruModeLabel = computed(() => configStore.minerUConfig.mode === 'internal' ? '内网 MinerU' : '在线 MinerU')
 const mineruConfigHint = computed(() => configStore.minerUConfig.enabled
@@ -309,6 +312,10 @@ async function deleteFolder(folderId: string) {
 }
 
 async function syncFolder(folderId: string) {
+	if (activeFolderIds.value.has(folderId)) {
+		notifyWarning('该同步任务正在处理中，请等待当前批次完成后再执行')
+		return
+	}
   syncingId.value = folderId
   try {
     const result = await foldersStore.scanFolder(folderId)
@@ -465,6 +472,7 @@ async function previewFileMatch() {
   previewLoading.value = true
   previewError.value = ''
   previewResult.value = null
+  showPreview.value = true
 
   try {
     const result = await withTimeout(() => App.PreviewMatch({
@@ -475,7 +483,6 @@ async function previewFileMatch() {
       mineruFileExtensions: form.value.mineruFileExtensions
     }), '预览文件匹配结果', SCAN_CALL_TIMEOUT_MS)
     previewResult.value = result
-    showPreview.value = true
   } catch (e: any) {
     previewError.value = errorMessage(e, '预览文件匹配失败')
   } finally {
@@ -495,7 +502,7 @@ async function previewFileMatch() {
     <div v-else-if="foldersStore.error" class="error-msg">{{ foldersStore.error }}</div>
     <div v-else-if="foldersStore.folders.length === 0" class="empty-state"><FolderOpen :size="34" /><h3>还没有同步任务</h3><p>创建第一个任务，开始把本地资料同步到 MaxKB。</p><el-button type="primary" @click="openCreate"><FolderPlus :size="15" /> 创建同步任务</el-button></div>
     <div v-else class="folders-grid">
-      <FolderCard v-for="folder in foldersStore.folders" :key="folder.folderId" :folder="folder" :busy="syncingId === folder.folderId" @sync="syncFolder" @files="viewFiles" @edit="openEdit" @delete="deleteFolder" @toggle-enabled="toggleEnabled" />
+      <FolderCard v-for="folder in foldersStore.folders" :key="folder.folderId" :folder="folder" :busy="syncingId === folder.folderId" :processing="activeFolderIds.has(folder.folderId)" @sync="syncFolder" @files="viewFiles" @edit="openEdit" @delete="deleteFolder" @toggle-enabled="toggleEnabled" />
     </div>
 
     <el-dialog v-model="showModal" :title="editingId ? '编辑同步任务' : '新建'" width="720px" destroy-on-close>
@@ -504,7 +511,7 @@ async function previewFileMatch() {
         <section class="form-section"><h3 class="form-section-title">基础信息</h3><div class="form-grid"><div><div class="field-label">任务名称</div><el-input v-model="form.name" placeholder="例如：产品文档同步" required /></div><div><div class="field-label"><span>本地文件夹 <b class="required-mark" aria-hidden="true">*</b></span></div><div class="path-field"><el-input v-model="form.localPath" placeholder="选择本地目录" readonly required :aria-required="true" /><el-button plain type="primary" @click="selectDirectory">选择目录</el-button></div></div><div><div class="field-label"><span>目标工作区 <b class="required-mark" aria-hidden="true">*</b></span><small v-if="loadingWs">加载中…</small></div><el-select v-model="form.workspaceId" placeholder="选择目标工作区" filterable :loading="loadingWs" :no-data-text="loadingWs ? '正在加载工作空间…' : (wsError ? 'MaxKB 连接不可用' : '暂无可用工作空间')" :aria-required="true" style="width:100%"><el-option v-for="ws in workspaces" :key="ws.id" :label="ws.name" :value="ws.id" /></el-select><span v-if="wsError" class="form-hint danger-text">{{ wsError }}，请先到“系统设置”测试并保存 MaxKB 连接。</span></div><div><div class="field-label"><span>知识库 <b class="required-mark" aria-hidden="true">*</b></span><small v-if="loadingKb">加载中…</small></div><div class="path-field"><el-select v-model="form.kbId" placeholder="选择知识库" filterable :loading="loadingKb" :disabled="!form.workspaceId" :aria-required="true" style="width:100%"><el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" /></el-select><el-button plain :disabled="!form.workspaceId" @click="openCreateKb">新建</el-button></div><span v-if="kbError" class="form-hint danger-text">{{ kbError }}</span><span v-if="form.knowledgeFolderId" class="form-hint">目录 ID：{{ form.knowledgeFolderId }}</span></div></div></section>
         <section class="form-section"><h3 class="form-section-title">调度与删除策略</h3><div class="form-grid"><div><div class="field-label">定时同步</div><el-switch v-model="form.cronEnabled" active-text="启用 Cron" /></div><div v-if="form.cronEnabled"><div class="field-label">Cron 表达式 <small>标准 5 段格式</small></div><el-input v-model="form.cronExpression" placeholder="0 * * * *" @blur="validateCron" /><span v-if="cronError" class="form-hint danger-text">{{ cronError }}</span></div><div class="wide"><el-checkbox v-model="form.syncDeleteLocalRemoved">同步删除本地已删除文件</el-checkbox><span class="form-hint">关闭时远端文档保留，本地文件重新出现且指纹相同不会重复上传。</span></div></div></section>
         <section class="form-section"><h3 class="form-section-title">文件筛选</h3><div class="form-grid"><div><div class="field-label">Include 正则 <small>每行一个，留空表示全部</small></div><el-input v-model="form.includePatterns" type="textarea" :rows="3" placeholder="^docs/&#10;\\.md$" /></div><div><div class="field-label">Exclude 正则 <small>排除优先级更高</small></div><el-input v-model="form.excludePatterns" type="textarea" :rows="3" placeholder="^tmp/&#10;\\.log$" /></div><div class="wide"><el-button plain @click="previewFileMatch" :loading="previewLoading" :disabled="!form.localPath"><Search :size="15" /> 预览匹配结果</el-button><span v-if="previewError" class="form-hint danger-text">{{ previewError }}</span></div></div></section>
-        <section class="form-section"><div class="settings-inline-title"><div><h3 class="form-section-title">MinerU 文档转换</h3><p class="form-hint">对选定扩展名先通过 MinerU 转换，并将结果 ZIP 直接提交 MaxKB。</p></div><el-switch v-model="form.enableMinerU" /></div><div v-if="form.enableMinerU" class="mineru-config"><div class="form-hint">{{ mineruConfigHint }} MaxKB 支持 TXT、Markdown、PDF、DOCX、HTML、XLS、XLSX、CSV、ZIP 直接上传；其他格式可先交给 MinerU 转换。</div><div class="mineru-fields-grid"><div><div class="field-label">MinerU 转换范围 <small>逗号分隔</small></div><el-input v-model="form.mineruFileExtensions" placeholder="例如：.pptx, .png, .doc" /><span class="form-hint">留空时，原生格式直接上传，其他格式自动显示为 MinerU；填写后仅转换命中的扩展名。</span></div><div><div class="field-label">失败重试次数</div><el-input-number v-model="form.mineruRetryCount" :min="0" :max="10" controls-position="right" /></div><div><div class="field-label">轮询间隔（毫秒）</div><el-input-number v-model="form.mineruPollInterval" :min="500" :max="60000" :step="500" controls-position="right" /></div></div></div></section>
+        <section class="form-section"><div class="settings-inline-title"><div><h3 class="form-section-title">MinerU 文档转换</h3><p class="form-hint">对选定扩展名先通过 MinerU 转换，并将结果 ZIP 直接提交 MaxKB。</p></div><el-switch v-model="form.enableMinerU" /></div><div v-if="form.enableMinerU" class="mineru-config"><div class="form-hint">{{ mineruConfigHint }} MaxKB 支持 TXT、Markdown、PDF、DOCX、HTML、XLS、XLSX、CSV、ZIP 直接上传；其他格式可先交给 MinerU 转换。</div><div class="mineru-fields-grid"><div><div class="field-label">MinerU 转换范围 <small>逗号分隔</small></div><el-input v-model="form.mineruFileExtensions" placeholder="例如：.pptx, .png, .doc 或 *" /><span class="form-hint">留空时，原生格式直接上传，其他格式自动显示为 MinerU；填写后仅转换命中的扩展名。</span></div><div><div class="field-label">失败重试次数</div><el-input-number v-model="form.mineruRetryCount" :min="0" :max="10" controls-position="right" /></div><div><div class="field-label">轮询间隔（毫秒）</div><el-input-number v-model="form.mineruPollInterval" :min="500" :max="60000" :step="500" controls-position="right" /></div></div></div></section>
         <div class="dialog-footer-actions"><el-button @click="showModal = false">取消</el-button><el-button type="primary" native-type="submit" :loading="saving">{{ editingId ? '保存修改' : '创建任务' }}</el-button></div>
       </form>
     </el-dialog>
@@ -515,7 +522,39 @@ async function previewFileMatch() {
       <template #footer><div class="dialog-footer-actions"><el-button @click="showKbModal = false">取消</el-button><el-button type="primary" :loading="saving" @click="createKnowledgeBase">创建知识库</el-button></div></template>
     </el-dialog>
 
-    <el-dialog v-model="showPreview" title="文件匹配预览" width="720px"><div v-if="previewResult" class="preview-content"><div class="queue-summary"><div class="summary-card"><div><span>扫描文件</span><strong>{{ previewResult.totalFiles }}</strong></div></div><div class="summary-card"><div><span>将同步</span><strong class="success-text">{{ previewResult.matchedFiles.length }}</strong></div></div><div class="summary-card"><div><span>将排除</span><strong class="warning-text">{{ previewResult.excludedFiles.length }}</strong></div></div><div class="summary-card"><div><span>MinerU</span><strong>{{ previewMineruFiles.length }}</strong></div></div></div><div class="preview-lists"><details open class="file-list-section"><summary class="list-title">匹配文件（{{ previewResult.matchedFiles.length }}）</summary><div class="file-list"><div v-for="file in previewResult.matchedFiles.slice(0,100)" :key="file" class="file-item"><FileText :size="14" /><span>{{ file }}</span><el-tag v-if="previewMineruFiles.includes(file)" size="small" type="warning">MinerU</el-tag></div><div v-if="previewResult.matchedFiles.length > 100" class="form-hint">仅显示前 100 个文件</div></div></details><details class="file-list-section"><summary class="list-title">排除文件（{{ previewResult.excludedFiles.length }}）</summary><div class="file-list"><div v-for="file in previewResult.excludedFiles.slice(0,100)" :key="file" class="file-item"><CircleMinus :size="14" /><span>{{ file }}</span><el-tag size="small" type="info">{{ exclusionReason(file) }}</el-tag></div></div></details></div></div></el-dialog>
+    <el-dialog v-model="showPreview" title="文件匹配预览" width="720px">
+      <div v-loading="previewLoading" element-loading-text="正在递归扫描目录…" class="preview-dialog-body">
+        <div v-if="previewLoading" class="preview-loading-hint">大型目录扫描需要一些时间，扫描期间不会读取文件内容。</div>
+        <div v-else-if="previewError" class="notice warning"><AlertTriangle :size="16" /> {{ previewError }}</div>
+        <div v-else-if="previewResult" class="preview-content">
+          <div class="queue-summary">
+            <div class="summary-card"><div><span>扫描文件</span><strong>{{ previewResult.totalFiles }}</strong></div></div>
+            <div class="summary-card"><div><span>将同步</span><strong class="success-text">{{ previewResult.matchedCount }}</strong></div></div>
+            <div class="summary-card"><div><span>将排除</span><strong class="warning-text">{{ previewResult.excludedCount }}</strong></div></div>
+            <div class="summary-card"><div><span>MinerU</span><strong>{{ previewMineruCount }}</strong></div></div>
+          </div>
+          <div v-if="previewResult.matchedCount > previewResult.matchedFiles.length || previewResult.excludedCount > previewResult.excludedFiles.length" class="preview-limit-hint">
+            为保证预览流畅，统计结果包含完整扫描数据，每类文件仅展示前 {{ previewResult.previewLimit }} 条。
+          </div>
+          <div class="preview-lists">
+            <details open class="file-list-section">
+              <summary class="list-title">匹配文件（{{ previewResult.matchedCount }}）</summary>
+              <div class="file-list">
+                <div v-for="file in previewResult.matchedFiles" :key="file" class="file-item"><FileText :size="14" /><span>{{ file }}</span><el-tag v-if="previewMineruFileSet.has(file)" size="small" type="warning">MinerU</el-tag></div>
+                <div v-if="previewResult.matchedCount === 0" class="form-hint">没有匹配的文件</div>
+              </div>
+            </details>
+            <details class="file-list-section">
+              <summary class="list-title">排除文件（{{ previewResult.excludedCount }}）</summary>
+              <div class="file-list">
+                <div v-for="file in previewResult.excludedFiles" :key="file" class="file-item"><CircleMinus :size="14" /><span>{{ file }}</span><el-tag size="small" type="info">{{ exclusionReason(file) }}</el-tag></div>
+                <div v-if="previewResult.excludedCount === 0" class="form-hint">没有被排除的文件</div>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -530,7 +569,10 @@ export default { components: { AlertTriangle, CircleMinus, FileText, FolderOpen,
 .empty-state p { margin: 0 0 5px; color: var(--muted); font-size: 12px; }
 .settings-inline-title { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
 .settings-inline-title .form-section-title { margin-bottom: 4px; }
+.preview-dialog-body { min-height: 180px; }
+.preview-loading-hint { display: flex; min-height: 180px; align-items: flex-end; justify-content: center; padding-bottom: 24px; color: var(--muted); font-size: 12px; }
 .preview-content { max-height: 62vh; overflow: auto; }
+.preview-limit-hint { margin: 10px 0; padding: 8px 10px; color: var(--text-secondary); background: var(--surface-muted); border-radius: 6px; font-size: 12px; }
 .preview-lists { display: flex; flex-direction: column; gap: 10px; }
 .file-list-section { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
 .list-title { padding: 10px 12px; color: var(--text-secondary); background: var(--surface-muted); cursor: pointer; font-size: 12px; }

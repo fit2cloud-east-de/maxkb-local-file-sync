@@ -95,6 +95,7 @@ export namespace api {
 	    fileStatus: string;
 	    observedMd5: string;
 	    lastSuccessMd5: string;
+	    lastSuccessUsedMinerU: boolean;
 	    remoteDocId: string;
 	    lastSyncedAt?: string;
 	    lastCheckedAt?: string;
@@ -113,6 +114,7 @@ export namespace api {
 	        this.fileStatus = source["fileStatus"];
 	        this.observedMd5 = source["observedMd5"];
 	        this.lastSuccessMd5 = source["lastSuccessMd5"];
+	        this.lastSuccessUsedMinerU = source["lastSuccessUsedMinerU"];
 	        this.remoteDocId = source["remoteDocId"];
 	        this.lastSyncedAt = source["lastSyncedAt"];
 	        this.lastCheckedAt = source["lastCheckedAt"];
@@ -261,6 +263,7 @@ export namespace api {
 	export class MaxKBConfigDTO {
 	    baseUrl: string;
 	    apiKey: string;
+	    timeoutSeconds: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new MaxKBConfigDTO(source);
@@ -270,6 +273,7 @@ export namespace api {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.baseUrl = source["baseUrl"];
 	        this.apiKey = source["apiKey"];
+	        this.timeoutSeconds = source["timeoutSeconds"];
 	    }
 	}
 	export class MinerUArtifactCleanupResultDTO {
@@ -396,6 +400,11 @@ export namespace api {
 	}
 	export class PreviewMatchResult {
 	    totalFiles: number;
+	    matchedCount: number;
+	    excludedCount: number;
+	    mineruCount: number;
+	    regularCount: number;
+	    previewLimit: number;
 	    matchedFiles: string[];
 	    excludedFiles: string[];
 	    exclusionReasons?: Record<string, string>;
@@ -409,6 +418,11 @@ export namespace api {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.totalFiles = source["totalFiles"];
+	        this.matchedCount = source["matchedCount"];
+	        this.excludedCount = source["excludedCount"];
+	        this.mineruCount = source["mineruCount"];
+	        this.regularCount = source["regularCount"];
+	        this.previewLimit = source["previewLimit"];
 	        this.matchedFiles = source["matchedFiles"];
 	        this.excludedFiles = source["excludedFiles"];
 	        this.exclusionReasons = source["exclusionReasons"];
@@ -490,6 +504,8 @@ export namespace api {
 	    processingStage: string;
 	    controlState: string;
 	    finalStatus: string;
+	    errorCode?: string;
+	    errorCategory?: string;
 	    errorMessage?: string;
 	    createdAt: string;
 	    startedAt?: string;
@@ -508,6 +524,8 @@ export namespace api {
 	        this.processingStage = source["processingStage"];
 	        this.controlState = source["controlState"];
 	        this.finalStatus = source["finalStatus"];
+	        this.errorCode = source["errorCode"];
+	        this.errorCategory = source["errorCategory"];
 	        this.errorMessage = source["errorMessage"];
 	        this.createdAt = source["createdAt"];
 	        this.startedAt = source["startedAt"];

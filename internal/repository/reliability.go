@@ -67,6 +67,17 @@ type ReliabilityStore struct{ db *db.DB }
 
 func NewReliabilityStore(database *db.DB) *ReliabilityStore { return &ReliabilityStore{db: database} }
 
+func (s *ReliabilityStore) HasActiveRun(ctx context.Context, folderID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	var count int
+	if err := s.db.Conn().QueryRowContext(ctx, `SELECT COUNT(*) FROM active_task_locks WHERE folder_id=?`, folderID).Scan(&count); err != nil {
+		return false, fmt.Errorf("check active folder run: %w", err)
+	}
+	return count > 0, nil
+}
+
 func nowText() string             { return time.Now().UTC().Format(time.RFC3339Nano) }
 func timeText(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
@@ -1333,7 +1344,7 @@ func (s *ReliabilityStore) MarkReconcile(ctx context.Context, runFileID, reason 
 	if err := rowsAffected(res, "mark run file reconciliation", 1); err != nil {
 		return err
 	}
-	res, err = tx.ExecContext(ctx, `UPDATE file_attempts SET status='RECONCILE_REQUIRED',reconcile_reason=?,error_message=?,completed_at=? WHERE id=(SELECT id FROM file_attempts WHERE run_file_id=? ORDER BY attempt_no DESC LIMIT 1)`, reason, reason, now, runFileID)
+	res, err = tx.ExecContext(ctx, `UPDATE file_attempts SET status='RECONCILE_REQUIRED',error_code='RECONCILE_REQUIRED',reconcile_reason=?,error_message=?,completed_at=? WHERE id=(SELECT id FROM file_attempts WHERE run_file_id=? ORDER BY attempt_no DESC LIMIT 1)`, reason, reason, now, runFileID)
 	if err != nil {
 		return err
 	}
@@ -1364,13 +1375,14 @@ func (s *ReliabilityStore) CommitSyncSuccess(ctx context.Context, runFileID, rem
 	defer tx.Rollback(ctx)
 	now := nowText()
 	var fileID, attemptID string
+	var usedMinerU int
 	if err := tx.QueryRowContext(ctx, `SELECT file_id FROM run_files WHERE run_file_id=? AND final_status='PENDING'`, runFileID).Scan(&fileID); err != nil {
 		return err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM file_attempts WHERE run_file_id=? ORDER BY attempt_no DESC LIMIT 1`, runFileID).Scan(&attemptID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id,CASE WHEN COALESCE(mineru_task_id,'')<>'' THEN 1 ELSE 0 END FROM file_attempts WHERE run_file_id=? ORDER BY attempt_no DESC LIMIT 1`, runFileID).Scan(&attemptID, &usedMinerU); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE sync_files SET file_status='SYNCED',remote_doc_id=?,pending_remote_doc_id='',observed_md5=?,last_success_md5=?,last_synced_at=?,updated_at=? WHERE file_id=?`, remoteDocumentID, sourceMD5After, snapshotMD5, now, now, fileID)
+	res, err := tx.ExecContext(ctx, `UPDATE sync_files SET file_status='SYNCED',remote_doc_id=?,pending_remote_doc_id='',observed_md5=?,last_success_md5=?,last_success_used_mineru=?,last_synced_at=?,updated_at=? WHERE file_id=?`, remoteDocumentID, sourceMD5After, snapshotMD5, usedMinerU, now, now, fileID)
 	if err != nil {
 		return err
 	}

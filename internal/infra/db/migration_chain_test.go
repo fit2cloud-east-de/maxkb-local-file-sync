@@ -62,7 +62,7 @@ func TestMigrationSourcesMatch(t *testing.T) {
 	}
 }
 
-func TestMigrationChainV1ToV11(t *testing.T) {
+func TestMigrationChainV1ToV14(t *testing.T) {
 	database, err := New(Config{DataDir: t.TempDir(), DBName: "migration.db"})
 	if err != nil {
 		t.Fatal(err)
@@ -78,13 +78,14 @@ func TestMigrationChainV1ToV11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || dirty {
+	if version != 14 || dirty {
 		t.Fatalf("version=%d dirty=%v", version, dirty)
 	}
 
 	for _, column := range []struct{ table, name string }{
 		{"sync_runs", "recovery_count"}, {"sync_runs", "last_interrupted_at"},
 		{"sync_runs", "last_recovery_at"}, {"sync_runs", "parent_run_id"},
+		{"sync_files", "last_success_used_mineru"},
 	} {
 		var count int
 		if err := database.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?", column.table, column.name).Scan(&count); err != nil {
@@ -148,6 +149,81 @@ func TestMigrationChainV1ToV11(t *testing.T) {
 	}
 }
 
+func TestProcessingRouteMigrationBackfillsLatestSuccessfulAttempt(t *testing.T) {
+	database, err := New(Config{DataDir: t.TempDir(), DBName: "processing-route.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.MigrateUp(MigrationsFS); err != nil {
+		t.Fatalf("initial migrate up: %v", err)
+	}
+	if err := database.MigrateDown(MigrationsFS, 2); err != nil {
+		t.Fatalf("migrate down to v12: %v", err)
+	}
+
+	const (
+		older = "2026-09-10T01:00:00Z"
+		newer = "2026-09-10T02:00:00Z"
+	)
+	if _, err := database.Exec(`INSERT INTO sync_folders(folder_id,name,local_path,normalized_local_path,kb_id,workspace_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
+		"folder-route", "Route", t.TempDir(), "folder-route", "kb", "workspace", older, older); err != nil {
+		t.Fatal(err)
+	}
+	for _, fileID := range []string{"file-latest-direct", "file-latest-mineru"} {
+		if _, err := database.Exec(`INSERT INTO sync_files(file_id,folder_id,relative_path,normalized_relative_path,file_status,remote_doc_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
+			fileID, "folder-route", fileID+".pdf", fileID+".pdf", "SYNCED", "document-"+fileID, older, older); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	type attemptFixture struct {
+		runID, fileID, completedAt, minerUTaskID string
+	}
+	attempts := []attemptFixture{
+		{runID: "run-direct-old-mineru", fileID: "file-latest-direct", completedAt: older, minerUTaskID: "mineru-old"},
+		{runID: "run-direct-new-direct", fileID: "file-latest-direct", completedAt: newer},
+		{runID: "run-mineru-old-direct", fileID: "file-latest-mineru", completedAt: older},
+		{runID: "run-mineru-new-mineru", fileID: "file-latest-mineru", completedAt: newer, minerUTaskID: "mineru-new"},
+	}
+	for _, fixture := range attempts {
+		if _, err := database.Exec(`INSERT INTO sync_tasks(task_id,folder_id,kb_id,workspace_id,trigger_type,run_status,processing_stage,control_state,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			fixture.runID, "folder-route", "kb", "workspace", "manual", "SUCCESS", "COMPLETED", "ACTIVE", fixture.completedAt, fixture.completedAt); err != nil {
+			t.Fatal(err)
+		}
+		runFileID := "rf-" + fixture.runID
+		if _, err := database.Exec(`INSERT INTO run_files(run_file_id,task_id,file_id,processing_stage,control_state,final_status,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?)`,
+			runFileID, fixture.runID, fixture.fileID, "COMPLETED", "ACTIVE", "SUCCESS", fixture.completedAt, fixture.completedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Exec(`INSERT INTO file_attempts(id,run_file_id,attempt_no,status,started_at,completed_at,mineru_task_id) VALUES(?,?,?,?,?,?,?)`,
+			"attempt-"+fixture.runID, runFileID, 1, "SUCCESS", fixture.completedAt, fixture.completedAt, fixture.minerUTaskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := database.MigrateUp(MigrationsFS); err != nil {
+		t.Fatalf("migrate processing route: %v", err)
+	}
+	for _, expected := range []struct {
+		fileID     string
+		wantRoute  int
+		wantStatus string
+	}{
+		{fileID: "file-latest-direct", wantRoute: 0, wantStatus: "SYNCED"},
+		{fileID: "file-latest-mineru", wantRoute: 1, wantStatus: "STALE_REMOTE_EXISTS"},
+	} {
+		var gotRoute int
+		var gotStatus string
+		if err := database.QueryRow(`SELECT last_success_used_mineru,file_status FROM sync_files WHERE file_id=?`, expected.fileID).Scan(&gotRoute, &gotStatus); err != nil {
+			t.Fatal(err)
+		}
+		if gotRoute != expected.wantRoute || gotStatus != expected.wantStatus {
+			t.Fatalf("%s route/status = %d/%s, want %d/%s", expected.fileID, gotRoute, gotStatus, expected.wantRoute, expected.wantStatus)
+		}
+	}
+}
+
 func TestMigrateUpRepairsV8DatabaseMissingMinerUArtifactColumn(t *testing.T) {
 	database, err := New(Config{DataDir: t.TempDir(), DBName: "missing-mineru-column.db"})
 	if err != nil {
@@ -169,10 +245,14 @@ func TestMigrateUpRepairsV8DatabaseMissingMinerUArtifactColumn(t *testing.T) {
 		"mineru_cleanup_temp_results",
 		"mineru_cleanup_after_value",
 		"mineru_cleanup_after_unit",
+		"maxkb_timeout_seconds",
 	} {
 		if _, err := database.Exec(`ALTER TABLE system_settings DROP COLUMN ` + column); err != nil {
 			t.Fatalf("drop simulated legacy column %s: %v", column, err)
 		}
+	}
+	if _, err := database.Exec(`ALTER TABLE sync_files DROP COLUMN last_success_used_mineru`); err != nil {
+		t.Fatalf("drop simulated legacy column last_success_used_mineru: %v", err)
 	}
 	// A real v8 database predates the close behavior setting as well. Remove
 	// the v11 column from this downgraded fixture so the later migration can
@@ -192,8 +272,8 @@ func TestMigrateUpRepairsV8DatabaseMissingMinerUArtifactColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v11 clean", version, dirty)
+	if version != 14 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v14 clean", version, dirty)
 	}
 
 	for _, column := range []string{
@@ -317,7 +397,7 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("initial migrate up: %v", err)
 	}
-	if err := database.MigrateDown(MigrationsFS, 7); err != nil {
+	if err := database.MigrateDown(MigrationsFS, 10); err != nil {
 		t.Fatalf("migrate down to v4: %v", err)
 	}
 	version, dirty, err := database.GetMigrationVersion()
@@ -338,8 +418,8 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v11 clean", version, dirty)
+	if version != 14 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v14 clean", version, dirty)
 	}
 
 	for _, column := range []string{"mineru_save_full_result", "mineru_result_save_dir", "mineru_cleanup_temp_results"} {

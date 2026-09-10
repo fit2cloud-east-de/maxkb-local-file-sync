@@ -216,23 +216,21 @@ func (r *MaxKBReconciler) reconcileItem(ctx context.Context, maxkb adapter.MaxKB
 		return nil
 	}
 
-	switch document.StatusMapped {
-	case adapter.MaxKBDocStatusSuccess:
-		if _, err := r.store.ResolveReconcile(ctx, item.RunFileID, "REMOTE_SUCCEEDED", document.ID); err != nil {
-			return fmt.Errorf("persist remote success: %w", err)
-		}
-		if r.logger != nil {
-			r.logger.Info("MaxKB reconciliation confirmed remote success: run_file_id=%s, document_id=%s", safeID(item.RunFileID), safeID(document.ID))
-		}
-	case adapter.MaxKBDocStatusFailed:
-		// A failed remote document is not automatically marked failed here: the
-		// local operation may have crossed a delete/update boundary and the
-		// existing explicit reconciliation action remains the safe authority.
-		if r.logger != nil {
-			r.logger.Warn("MaxKB reconciliation found remote failed document: run_file_id=%s, document_id=%s, status=%s", safeID(item.RunFileID), safeID(document.ID), document.Status)
-		}
-	case adapter.MaxKBDocStatusPending, adapter.MaxKBDocStatusProcessing, adapter.MaxKBDocStatusUnknown:
-		// Keep RECONCILE_REQUIRED and observe again on the next pass.
+	// The document list is the durable acknowledgement we can verify after a
+	// split or batch_create timeout. A document ID means MaxKB accepted and
+	// created the document; embedding/indexing runs asynchronously and its
+	// aggregate status must not gate local upload success. This intentionally
+	// treats PENDING, PROCESSING, UNKNOWN, and even a later indexing FAILED
+	// status as an uploaded document. The latter is still visible in MaxKB and
+	// is not evidence that the upload itself was absent.
+	if strings.TrimSpace(document.ID) == "" {
+		return fmt.Errorf("MaxKB reconciliation matched a document without an id")
+	}
+	if _, err := r.store.ResolveReconcile(ctx, item.RunFileID, "REMOTE_SUCCEEDED", document.ID); err != nil {
+		return fmt.Errorf("persist remote success: %w", err)
+	}
+	if r.logger != nil {
+		r.logger.Info("MaxKB reconciliation confirmed remote document created: run_file_id=%s, document_id=%s, status=%s", safeID(item.RunFileID), safeID(document.ID), safeID(document.Status))
 	}
 	return nil
 }

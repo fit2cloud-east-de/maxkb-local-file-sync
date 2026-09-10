@@ -4,8 +4,6 @@ import {api} from '../models';
 
 export function CleanupMinerUArtifacts():Promise<api.MinerUArtifactCleanupResultDTO>;
 
-export function ConfigureCloseBehavior(arg1:string):Promise<void>;
-
 export function ConfigureMaxKB(arg1:api.MaxKBConfigDTO):Promise<void>;
 
 export function ConfigureMinerU(arg1:api.MinerUConfigDTO):Promise<void>;
@@ -29,8 +27,6 @@ export function DisableTask(arg1:string):Promise<void>;
 export function EnableTask(arg1:string):Promise<void>;
 
 export function GetAppVersion():Promise<string>;
-
-export function GetCloseBehavior():Promise<string>;
 
 export function GetDataDirectory():Promise<string>;
 

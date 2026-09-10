@@ -44,11 +44,20 @@ type ScanResult struct {
 	UnchangedFiles []string          // 未变更文件的相对路径
 }
 
+// Keep preview payloads bounded so large folders do not freeze the Wails
+// bridge or Vue while preserving exact aggregate counts.
+const previewSampleLimit = 100
+
 // PreviewResult describes the same filtering semantics used by DetectChanges.
-// ExclusionReasons is keyed by normalized relative path and deliberately only
-// contains safe, user-facing reason codes; it never includes file contents.
+// Detail lists and ExclusionReasons contain at most PreviewLimit entries;
+// aggregate counts always cover the complete directory scan.
 type PreviewResult struct {
 	TotalFiles       int
+	MatchedCount     int
+	ExcludedCount    int
+	MinerUCount      int
+	RegularCount     int
+	PreviewLimit     int
 	MatchedFiles     []string
 	ExcludedFiles    []string
 	ExclusionReasons map[string]string
@@ -79,8 +88,20 @@ func (s *FileScanner) PreviewMatch(ctx context.Context, rootPath, includePattern
 		return nil, err
 	}
 	result := &PreviewResult{
-		MatchedFiles: make([]string, 0), ExcludedFiles: make([]string, 0),
-		ExclusionReasons: make(map[string]string), MinerUFiles: make([]string, 0), RegularFiles: make([]string, 0),
+		PreviewLimit:     previewSampleLimit,
+		MatchedFiles:     make([]string, 0, previewSampleLimit),
+		ExcludedFiles:    make([]string, 0, previewSampleLimit),
+		ExclusionReasons: make(map[string]string, previewSampleLimit),
+		MinerUFiles:      make([]string, 0, previewSampleLimit),
+		RegularFiles:     make([]string, 0, previewSampleLimit),
+	}
+	appendExcluded := func(relativePath, reason string) {
+		result.ExcludedCount++
+		if len(result.ExcludedFiles) >= previewSampleLimit {
+			return
+		}
+		result.ExcludedFiles = append(result.ExcludedFiles, relativePath)
+		result.ExclusionReasons[relativePath] = reason
 	}
 	err = filepath.WalkDir(root, func(current string, entry os.DirEntry, walkErr error) error {
 		if err := contextErr(ctx); err != nil {
@@ -111,25 +132,31 @@ func (s *FileScanner) PreviewMatch(ctx context.Context, rootPath, includePattern
 		}
 		result.TotalFiles++
 		if !matcher.Match(rel) {
-			result.ExcludedFiles = append(result.ExcludedFiles, rel)
 			if matcher.matches(matcher.exclude, rel) {
-				result.ExclusionReasons[rel] = "excluded_by_exclude_pattern"
+				appendExcluded(rel, "excluded_by_exclude_pattern")
 			} else {
-				result.ExclusionReasons[rel] = "not_matched_by_include_pattern"
+				appendExcluded(rel, "not_matched_by_include_pattern")
 			}
 			return nil
 		}
 		useMinerU := shouldUseMinerU(mineruEnabled, rel, mineruExtensions)
 		if !isSupportedForSync(rel, mineruEnabled, mineruExtensions) {
-			result.ExcludedFiles = append(result.ExcludedFiles, rel)
-			result.ExclusionReasons[rel] = "unsupported_by_maxkb"
+			appendExcluded(rel, "unsupported_by_maxkb")
 			return nil
 		}
-		result.MatchedFiles = append(result.MatchedFiles, rel)
+		result.MatchedCount++
 		if useMinerU {
-			result.MinerUFiles = append(result.MinerUFiles, rel)
+			result.MinerUCount++
 		} else {
-			result.RegularFiles = append(result.RegularFiles, rel)
+			result.RegularCount++
+		}
+		if len(result.MatchedFiles) < previewSampleLimit {
+			result.MatchedFiles = append(result.MatchedFiles, rel)
+			if useMinerU {
+				result.MinerUFiles = append(result.MinerUFiles, rel)
+			} else {
+				result.RegularFiles = append(result.RegularFiles, rel)
+			}
 		}
 		return nil
 	})
@@ -379,7 +406,7 @@ func (s *FileScanner) ScanFolder(ctx context.Context, folderID string) (*ScanRes
 			// The file is still present and should be processed by the executor;
 			// do not turn a transient read failure into a deletion.
 			result.UpdatedFiles = append(result.UpdatedFiles, relPath)
-		} else if changed {
+		} else if changed || existing.FileStatus == types.FileStatusStaleRemoteExists || processingRouteChanged(existing, folder, relPath, mineruExtensions) {
 			result.UpdatedFiles = append(result.UpdatedFiles, relPath)
 		} else {
 			result.UnchangedFiles = append(result.UnchangedFiles, relPath)
@@ -424,6 +451,13 @@ func (s *FileScanner) ScanFolder(ctx context.Context, folderID string) (*ScanRes
 	sort.Strings(result.DeletedFiles)
 	sort.Strings(result.UnchangedFiles)
 	return result, nil
+}
+
+func processingRouteChanged(existing *repository.SyncFile, folder *repository.SyncFolder, relPath string, mineruExtensions []string) bool {
+	if existing == nil || folder == nil || existing.LastSuccessMD5 == "" || existing.RemoteDocID == "" {
+		return false
+	}
+	return existing.LastSuccessUsedMinerU != shouldUseMinerU(folder.EnableMinerU, relPath, mineruExtensions)
 }
 
 func (s *FileScanner) scanDisk(ctx context.Context, root string, matcher *pathMatcher, mineruEnabled bool, mineruExtensions []string) (map[string]string, map[string]bool, error) {
@@ -504,6 +538,11 @@ func shouldUseMinerU(mineruEnabled bool, relPath string, mineruExtensions []stri
 	// MaxKB 原生支持的格式仍走直接上传，其他格式交给 MinerU。
 	if len(mineruExtensions) == 0 {
 		return !file.IsMaxKBDirectUploadSupported(relPath)
+	}
+	for _, extension := range mineruExtensions {
+		if extension == "*" {
+			return file.IsMinerUSupported(relPath)
+		}
 	}
 	return file.MatchExtension(relPath, mineruExtensions)
 }

@@ -113,9 +113,13 @@ func (s *TaskService) CreateTask(ctx context.Context, folderID string, triggerTy
 		})
 	}
 	if s.reliability != nil {
+		planStartedAt := time.Now()
+		s.logger.Info("Creating sync run plan: task_id=%s, folder=%s, files=%d", task.TaskID, folderID, len(runFiles))
 		if err := s.reliability.CreateRunPlan(ctx, task, runFiles); err != nil {
+			s.logger.Error("Create sync run plan failed: task_id=%s, folder=%s, files=%d, duration=%s, error=%v", task.TaskID, folderID, len(runFiles), time.Since(planStartedAt), err)
 			return nil, fmt.Errorf("failed to create durable run plan: %w", err)
 		}
+		s.logger.Info("Created sync run plan: task_id=%s, folder=%s, files=%d, duration=%s", task.TaskID, folderID, len(runFiles), time.Since(planStartedAt))
 	} else {
 		if err := s.taskRepo.Create(ctx, task); err != nil {
 			return nil, fmt.Errorf("failed to create task: %w", err)

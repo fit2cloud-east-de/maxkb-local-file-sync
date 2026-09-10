@@ -78,6 +78,7 @@ export interface FileDTO {
   fileStatus: string
   observedMd5: string
   lastSuccessMd5: string
+  lastSuccessUsedMinerU: boolean
   remoteDocId: string
   lastSyncedAt?: string
   lastCheckedAt?: string
@@ -138,6 +139,8 @@ export interface RunFileDTO {
   processingStage: string
   controlState: string
   finalStatus: string
+  errorCode?: string
+  errorCategory?: string
   errorMessage?: string
   createdAt: string
   startedAt?: string
@@ -162,6 +165,11 @@ export interface PreviewMatchRequest {
 
 export interface PreviewMatchResult {
   totalFiles: number
+  matchedCount: number
+  excludedCount: number
+  mineruCount: number
+  regularCount: number
+  previewLimit: number
   matchedFiles: string[]
   excludedFiles: string[]
   exclusionReasons?: Record<string, string>
@@ -169,7 +177,7 @@ export interface PreviewMatchResult {
   regularFiles: string[]
 }
 
-export interface MaxKBConfigDTO { baseUrl: string; apiKey: string }
+export interface MaxKBConfigDTO { baseUrl: string; apiKey: string; timeoutSeconds: number }
 export interface MinerUConfigDTO { enabled: boolean; baseUrl: string; apiKey: string; mode: string }
 export interface MinerUConnectionTestResultDTO {
   healthy: boolean
