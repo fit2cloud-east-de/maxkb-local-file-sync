@@ -58,9 +58,15 @@ Function .onInit
     StrCpy $ElevatedWorker "1"
     StrCpy $InstallScope "machine"
     StrCpy $DetectedInstallScope "machine"
-    ReadEnvStr $INSTDIR MAXKB_INSTALLER_TARGET
+    # /D is parsed by NSIS before .onInit. Prefer the helper environment value
+    # when available, but never erase a valid /D path across the UAC boundary.
+    ReadEnvStr $2 MAXKB_INSTALLER_TARGET
+    StrCmp $2 "" 0 useWorkerTarget
     StrCmp $INSTDIR "" 0 workerReady
     StrCpy $INSTDIR "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
+    Goto workerReady
+    useWorkerTarget:
+    StrCpy $INSTDIR $2
     workerReady:
     Goto checkArchitecture
 
@@ -133,6 +139,20 @@ Function CreateDesktopShortcut
     CreateShortcut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "${PRODUCT_APP_DIR}\${PRODUCT_EXECUTABLE}" "" "${PRODUCT_APP_DIR}\${PRODUCT_ICON}" 0
 FunctionEnd
 
+Function PrintInstallSummary
+    DetailPrint "应用文件已安装到：${PRODUCT_APP_DIR}"
+    DetailPrint "配置目录已创建：$INSTDIR\config"
+    DetailPrint "日志目录已创建：$INSTDIR\logs"
+    DetailPrint "数据目录已创建：$INSTDIR\data"
+    ${If} $InstallScope == "machine"
+        DetailPrint "目录权限已设置：本机普通用户可写入 config、logs、data"
+    ${Else}
+        DetailPrint "目录权限已设置：当前用户可写入 config、logs、data"
+    ${EndIf}
+    DetailPrint "开始菜单快捷方式已创建"
+    DetailPrint "Windows 卸载信息已写入"
+FunctionEnd
+
 Function RunElevatedInstall
     StrCpy $InstallResult "1"
     System::Call 'Kernel32::SetEnvironmentVariable(t "MAXKB_INSTALLER_EXE", t "$EXEPATH") i.r0'
@@ -147,6 +167,7 @@ Function RunElevatedInstall
     ${If} $0 == "0"
         StrCpy $InstallResult "0"
     ${Else}
+        DetailPrint "提权安装进程退出代码：$0"
         MessageBox MB_ICONSTOP|MB_OK "所有用户安装需要管理员授权，安装未完成。"
     ${EndIf}
 FunctionEnd
@@ -178,6 +199,7 @@ Function GrantWritableDirectoryAccess
 FunctionEnd
 
 !macro PrepareWritableDirectory DIRECTORY
+    DetailPrint "正在创建并设置可写目录：${DIRECTORY}"
     ClearErrors
     CreateDirectory "${DIRECTORY}"
     ${If} ${Errors}
@@ -192,6 +214,7 @@ FunctionEnd
         SetErrorLevel 5
         Abort
     ${EndIf}
+    DetailPrint "可写目录已就绪：${DIRECTORY}"
 !macroend
 
 Function un.onInit
@@ -202,7 +225,11 @@ Function un.onInit
     IfErrors detectUninstallScope
     StrCmp $1 "1" 0 detectUninstallScope
     StrCpy $ElevatedWorker "1"
-    ReadEnvStr $INSTDIR MAXKB_INSTALLER_TARGET
+    ReadEnvStr $2 MAXKB_INSTALLER_TARGET
+    StrCmp $2 "" 0 useUninstallTarget
+    Goto detectUninstallScope
+    useUninstallTarget:
+    StrCpy $INSTDIR $2
 
     detectUninstallScope:
     StrCpy $InstallScope "user"
@@ -244,6 +271,14 @@ InstallDir "$LOCALAPPDATA\Programs\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 ShowInstDetails show
 
 Section "install"
+    SetDetailsPrint both
+    ${If} $InstallScope == "machine"
+        DetailPrint "安装范围：所有用户"
+    ${Else}
+        DetailPrint "安装范围：仅当前用户"
+    ${EndIf}
+    DetailPrint "安装目录：$INSTDIR"
+
     ${If} $InstallScope == "machine"
         UserInfo::GetAccountType
         Pop $0
@@ -253,15 +288,20 @@ Section "install"
                 SetErrorLevel 740
                 Abort
             ${EndIf}
+            DetailPrint "正在请求管理员权限..."
+            DetailPrint "正在启动提权安装进程..."
             Call RunElevatedInstall
             ${If} $InstallResult != "0"
                 SetErrorLevel 1223
                 Abort
             ${EndIf}
+            DetailPrint "管理员权限确认成功"
+            Call PrintInstallSummary
             # The machine worker cannot access the original user's desktop.
             # Remove the old shortcut only after installation succeeds.
             SetShellVarContext current
             Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
+            DetailPrint "安装已完成"
             Goto installComplete
         ${EndIf}
         SetShellVarContext all
@@ -269,16 +309,22 @@ Section "install"
         SetShellVarContext current
     ${EndIf}
 
+    DetailPrint "正在检查 WebView2 运行环境..."
     !insertmacro wails.webview2runtime
+    DetailPrint "WebView2 运行环境检查完成"
+    DetailPrint "正在准备应用目录：${PRODUCT_APP_DIR}"
     CreateDirectory "${PRODUCT_APP_DIR}"
     !insertmacro PrepareWritableDirectory "$INSTDIR\config"
     !insertmacro PrepareWritableDirectory "$INSTDIR\logs"
     !insertmacro PrepareWritableDirectory "$INSTDIR\data"
     SetOutPath "${PRODUCT_APP_DIR}"
+    DetailPrint "正在复制应用文件..."
     !insertmacro wails.files
     File "/oname=${PRODUCT_ICON}" "..\icon.ico"
 
+    DetailPrint "应用文件复制完成"
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "${PRODUCT_APP_DIR}\${PRODUCT_EXECUTABLE}" "" "${PRODUCT_APP_DIR}\${PRODUCT_ICON}" 0
+    DetailPrint "开始菜单快捷方式已创建"
     # Remove a shortcut left by an older installer. The finish-page option
     # recreates it only when the user keeps "创建桌面快捷方式" selected.
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
@@ -286,6 +332,7 @@ Section "install"
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$INSTDIR\${PRODUCT_ICON}"
 
+    DetailPrint "正在写入卸载程序和注册信息..."
     WriteUninstaller "$INSTDIR\uninstall.exe"
     SetRegView 64
     ${If} $InstallScope == "machine"
@@ -313,6 +360,8 @@ Section "install"
         IntFmt $0 "0x%08X" $0
         WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
     ${EndIf}
+    Call PrintInstallSummary
+    DetailPrint "安装已完成"
     installComplete:
 SectionEnd
 
