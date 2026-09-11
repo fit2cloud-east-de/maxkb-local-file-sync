@@ -165,13 +165,13 @@ func TestReliabilityStartAttemptAndReconcile(t *testing.T) {
 	if err := store.SaveAttempt(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkReconcile(ctx, "rf-1", "batch create outcome is unknown"); err != nil {
+	if err := store.MarkReconcileWithCode(ctx, "rf-1", "MAXKB_CREATE_UNKNOWN", "batch create outcome is unknown"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.MarkReconcile(ctx, "rf-1", "again"); err == nil {
 		t.Fatal("expected duplicate reconcile to fail")
 	}
-	var fs, final, attempt string
+	var fs, final, attempt, errorCode string
 	if err := database.QueryRow(`SELECT file_status FROM sync_files WHERE file_id='file-1'`).Scan(&fs); err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +181,21 @@ func TestReliabilityStartAttemptAndReconcile(t *testing.T) {
 	if err := database.QueryRow(`SELECT status FROM file_attempts WHERE id=?`, a.ID).Scan(&attempt); err != nil {
 		t.Fatal(err)
 	}
+	if err := database.QueryRow(`SELECT error_code FROM file_attempts WHERE id=?`, a.ID).Scan(&errorCode); err != nil {
+		t.Fatal(err)
+	}
 	if fs != "RECONCILE_REQUIRED" || final != "RECONCILE_REQUIRED" || attempt != "RECONCILE_REQUIRED" {
 		t.Fatalf("states %s %s %s", fs, final, attempt)
+	}
+	if errorCode != "MAXKB_CREATE_UNKNOWN" {
+		t.Fatalf("reconciliation error code = %q, want operation-specific code", errorCode)
+	}
+	items, err := store.ListReconcileItems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ErrorCode != "MAXKB_CREATE_UNKNOWN" {
+		t.Fatalf("reconciliation items = %#v, want preserved error code", items)
 	}
 	if _, err := store.ResolveReconcile(ctx, "rf-1", "REMOTE_ABSENT_RETRY", ""); err != nil {
 		t.Fatal(err)

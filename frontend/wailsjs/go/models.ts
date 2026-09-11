@@ -402,6 +402,8 @@ export namespace api {
 	    folderName: string;
 	    relativePath: string;
 	    processingStage: string;
+	    errorCode?: string;
+	    errorCategory?: string;
 	    reason: string;
 	    snapshotPath: string;
 	    snapshotMD5: string;
@@ -428,6 +430,8 @@ export namespace api {
 	        this.folderName = source["folderName"];
 	        this.relativePath = source["relativePath"];
 	        this.processingStage = source["processingStage"];
+	        this.errorCode = source["errorCode"];
+	        this.errorCategory = source["errorCategory"];
 	        this.reason = source["reason"];
 	        this.snapshotPath = source["snapshotPath"];
 	        this.snapshotMD5 = source["snapshotMD5"];
@@ -452,6 +456,7 @@ export namespace api {
 	    finalStatus: string;
 	    errorCode?: string;
 	    errorCategory?: string;
+	    usedMinerU: boolean;
 	    errorMessage?: string;
 	    createdAt: string;
 	    startedAt?: string;
@@ -472,6 +477,7 @@ export namespace api {
 	        this.finalStatus = source["finalStatus"];
 	        this.errorCode = source["errorCode"];
 	        this.errorCategory = source["errorCategory"];
+	        this.usedMinerU = source["usedMinerU"];
 	        this.errorMessage = source["errorMessage"];
 	        this.createdAt = source["createdAt"];
 	        this.startedAt = source["startedAt"];
@@ -512,6 +518,8 @@ export namespace api {
 	    startedAt?: string;
 	    completedAt?: string;
 	    errorMessage?: string;
+	    errorCode?: string;
+	    errorCategory?: string;
 	    totalFiles: number;
 	    successCount: number;
 	    failedCount: number;
@@ -543,6 +551,8 @@ export namespace api {
 	        this.startedAt = source["startedAt"];
 	        this.completedAt = source["completedAt"];
 	        this.errorMessage = source["errorMessage"];
+	        this.errorCode = source["errorCode"];
+	        this.errorCategory = source["errorCategory"];
 	        this.totalFiles = source["totalFiles"];
 	        this.successCount = source["successCount"];
 	        this.failedCount = source["failedCount"];
@@ -574,4 +584,3 @@ export namespace api {
 	}
 
 }
-

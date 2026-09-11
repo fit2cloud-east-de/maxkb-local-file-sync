@@ -22,7 +22,29 @@ const queueLoading = ref(false)
 const queueError = ref('')
 const detailFilter = ref<'ALL' | 'SUCCESS' | 'FAILED' | 'PENDING'>('ALL')
 const errorVisible = ref(false)
-const selectedError = ref<{ title: string; category?: string; code?: string; summary?: string; path?: string; message: string; stage?: string; failureCount?: number }>({ title: '执行失败', message: '' })
+interface FailureGroup {
+  key: string
+  title: string
+  code?: string
+  summary: string
+  stage?: string
+  count: number
+  paths: string[]
+  messages: string[]
+}
+interface SelectedError {
+  title: string
+  category?: string
+  code?: string
+  summary?: string
+  path?: string
+  message: string
+  stage?: string
+  failureCount?: number
+  groups?: FailureGroup[]
+  usedMinerU?: boolean
+}
+const selectedError = ref<SelectedError>({ title: '执行失败', message: '' })
 const errorLoading = ref(false)
 const controlError = ref('')
 const controlBusy = ref('')
@@ -208,47 +230,144 @@ const errorCategoryLabels: Record<string, string> = {
   MINERU_CONVERT: 'MinerU 转换报错',
   MINERU_DOWNLOAD: 'MinerU 文件下载报错',
   MINERU_RESULT: 'MinerU 结果处理报错',
-  MAXKB_UPLOAD: 'MinerU 文件上传 MaxKB 报错',
+  MAXKB_UPLOAD: '文件上传 MaxKB 报错',
   MAXKB_SPLIT: 'MaxKB 智能分段报错',
   MAXKB_CREATE: 'MaxKB 创建文档报错',
   MAXKB_DELETE: 'MaxKB 删除文档报错',
   LOCAL_SNAPSHOT: '本地文件读取报错',
   SOURCE_CHANGED: '同步期间文件发生变化',
   RECONCILE: '远端状态待人工确认',
+  CONFIGURATION: '服务配置报错',
+  UNSUPPORTED_FILE_TYPE: '文件格式不支持',
+  TASK_QUEUE: '执行队列报错',
+  TASK_CREATE: '同步批次创建报错',
+  LOCAL_SYSTEM: '本地存储或执行服务报错',
   OTHER: '同步处理报错',
 }
 
-function errorCategoryLabel(category?: string) {
+function errorCategoryLabel(category?: string, usedMinerU = false) {
+  if (category === 'MAXKB_UPLOAD' && usedMinerU) return 'MinerU 产物上传 MaxKB 报错'
+  if (category === 'MAXKB_SPLIT' && usedMinerU) return 'MinerU 产物上传及 MaxKB 智能分段报错'
   return (category && errorCategoryLabels[category]) || '同步处理报错'
 }
 
-function errorTitle(code?: string, category?: string, fallback = '任务执行失败') {
-  if (category) return errorCategoryLabel(category)
+function errorTitle(code?: string, category?: string, fallback = '任务执行失败', usedMinerU = false) {
+  if (category) return errorCategoryLabel(category, usedMinerU)
   if (code?.startsWith('MINERU_')) return 'MinerU 处理报错'
   if (code?.startsWith('MAXKB_')) return 'MaxKB 处理报错'
   return fallback
 }
 
+const errorCodeLabels: Record<string, string> = {
+  CONFIGURATION: '服务未正确配置',
+  UNSUPPORTED_FILE_TYPE: '文件格式不支持',
+  SNAPSHOT_FAILED: '本地文件快照创建失败',
+  SNAPSHOT_READ_FAILED: '本地文件快照读取失败',
+  SNAPSHOT_RECONCILE_REQUIRED: '本地文件快照状态不明确',
+  MINERU_SUBMIT_UNKNOWN: 'MinerU 任务提交结果不明确',
+  MINERU_CONVERT_AUTH_FAILED: 'MinerU 认证失败',
+  MINERU_CONVERT_PERMISSION_DENIED: 'MinerU 权限不足',
+  MINERU_CONVERT_UNSUPPORTED: 'MinerU 不支持该文件',
+  MINERU_CONVERT_PROTOCOL_ERROR: 'MinerU 接口协议异常',
+  MINERU_CONVERT_TIMEOUT: 'MinerU 转换超时',
+  MINERU_CONVERT_FAILED: 'MinerU 转换失败',
+  MINERU_STATUS_UNSUPPORTED: 'MinerU 任务状态不支持',
+  MINERU_RESULT_DOWNLOAD_FAILED: 'MinerU 结果下载失败',
+  MINERU_RESULT_READ_FAILED: 'MinerU 结果读取失败',
+  MINERU_RESULT_SAVE_FAILED: 'MinerU 结果保存失败',
+  MINERU_RESULT_INVALID: 'MinerU 结果无效',
+  MAXKB_UPLOAD_FAILED: '文件上传 MaxKB 失败',
+  MAXKB_UPLOAD_UNKNOWN: '文件上传 MaxKB 结果不明确',
+  MAXKB_SPLIT_TIMEOUT: 'MaxKB 智能分段超时',
+  MAXKB_SPLIT_UNKNOWN: 'MaxKB 智能分段结果不明确',
+  MAXKB_SPLIT_AUTH_FAILED: 'MaxKB 智能分段认证失败',
+  MAXKB_SPLIT_PERMISSION_DENIED: 'MaxKB 智能分段权限不足',
+  MAXKB_SPLIT_INCOMPATIBLE: 'MaxKB 智能分段响应不兼容',
+  MAXKB_SPLIT_FAILED: 'MaxKB 智能分段失败',
+  MAXKB_CREATE_FAILED: 'MaxKB 文档创建失败',
+  MAXKB_CREATE_UNKNOWN: 'MaxKB 文档创建结果不明确',
+  MAXKB_DELETE_FAILED: 'MaxKB 文档删除失败',
+  MAXKB_DELETE_UNKNOWN: 'MaxKB 文档删除结果不明确',
+  SOURCE_CHANGED: '同步期间本地文件发生变化',
+  RECONCILE_REQUIRED: '远端状态需要人工确认',
+  CRASH_WINDOW_UNKNOWN: '应用中断期间远端状态不明确',
+  RETRY_REQUIRES_RECONCILIATION: '重新同步前需要确认远端状态',
+  TASK_QUEUE_FAILED: '执行队列异常',
+  TASK_CREATE_FAILED: '同步批次创建失败',
+  LOCAL_STORAGE_FAILED: '本地存储异常',
+  EXECUTION_INTERNAL_FAILED: '本地执行服务异常',
+}
+
+function errorCodeLabel(code?: string) {
+  if (!code) return ''
+  return errorCodeLabels[code] ? `${errorCodeLabels[code]}（${code}）` : code
+}
+
 function errorSummary(code?: string, category?: string) {
   switch (code) {
+    case 'MINERU_SUBMIT_UNKNOWN': return 'MinerU 任务提交结果不明确，需要确认服务端是否已接收。'
     case 'MINERU_CONVERT_AUTH_FAILED': return 'MinerU 认证失败，请检查访问 Token。'
     case 'MINERU_CONVERT_PERMISSION_DENIED': return 'MinerU 没有权限处理该文件或任务。'
     case 'MINERU_CONVERT_UNSUPPORTED': return '该文件格式不在 MinerU 支持范围内。'
     case 'MINERU_CONVERT_TIMEOUT': return 'MinerU 转换等待超时。'
+    case 'MINERU_CONVERT_PROTOCOL_ERROR': return 'MinerU 接口响应格式或协议不符合预期。'
+    case 'MINERU_CONVERT_FAILED': return 'MinerU 转换任务执行失败。'
     case 'MINERU_STATUS_UNSUPPORTED': return 'MinerU 返回了客户端无法识别的任务状态。'
     case 'MINERU_RESULT_DOWNLOAD_FAILED': return 'MinerU 已完成转换，但结果文件下载失败。'
+    case 'MINERU_RESULT_READ_FAILED': return 'MinerU 结果文件无法读取。'
     case 'MINERU_RESULT_INVALID': return 'MinerU 返回的结果文件为空或格式无效。'
     case 'MINERU_RESULT_SAVE_FAILED': return 'MinerU 结果文件保存失败。'
     case 'MAXKB_UPLOAD_FAILED': return '文件上传到 MaxKB 失败。'
     case 'MAXKB_UPLOAD_UNKNOWN': return '文件上传结果不明确，请在异常处理中确认后再重试。'
     case 'MAXKB_SPLIT_TIMEOUT': return 'MaxKB 智能分段请求超时，远端结果需要确认。'
+    case 'MAXKB_SPLIT_UNKNOWN': return 'MaxKB 智能分段结果不明确，请在异常处理中确认。'
+    case 'MAXKB_SPLIT_AUTH_FAILED': return 'MaxKB 认证失败，请检查 API Key。'
+    case 'MAXKB_SPLIT_PERMISSION_DENIED': return '当前 MaxKB API Key 没有执行智能分段的权限。'
     case 'MAXKB_SPLIT_INCOMPATIBLE': return 'MaxKB 智能分段接口返回格式与当前版本不兼容。'
+    case 'MAXKB_SPLIT_FAILED': return 'MaxKB 智能分段失败。'
     case 'MAXKB_CREATE_FAILED': return 'MaxKB 文档创建失败。'
     case 'MAXKB_CREATE_UNKNOWN': return 'MaxKB 文档创建结果不明确，请在异常处理中确认。'
+    case 'MAXKB_DELETE_FAILED': return 'MaxKB 原文档删除失败。'
+    case 'MAXKB_DELETE_UNKNOWN': return 'MaxKB 原文档删除结果不明确，请在异常处理中确认。'
+    case 'SNAPSHOT_FAILED': return '读取本地文件并生成同步快照失败。'
+    case 'SNAPSHOT_READ_FAILED': return '本地同步快照无法读取。'
+    case 'SNAPSHOT_RECONCILE_REQUIRED': return '本地快照缺失或损坏，且远端操作已经开始，需要人工确认。'
+    case 'CONFIGURATION': return '同步服务尚未正确配置，请先检查系统设置。'
+    case 'UNSUPPORTED_FILE_TYPE': return '该文件格式不能直接上传，且未配置对应的 MinerU 转换。'
+    case 'TASK_QUEUE_FAILED': return '同步批次已保存，但本地执行服务未正常运行。'
+    case 'LOCAL_STORAGE_FAILED': return '本地数据库或任务状态保存失败。'
+    case 'EXECUTION_INTERNAL_FAILED': return '本地执行服务发生异常。'
     case 'SOURCE_CHANGED': return '同步过程中本地文件发生变化，本次未提交该文件。'
     case 'RECONCILE_REQUIRED': return '远端操作结果不明确，需要人工确认后处理。'
+    case 'CRASH_WINDOW_UNKNOWN': return '应用中断时远端操作可能已经执行，需要人工确认。'
+    case 'RETRY_REQUIRES_RECONCILIATION': return '重新同步前需要先确认上一次远端操作结果。'
     default: return category ? errorCategoryLabel(category) : '文件处理失败，请展开技术详情查看原因。'
   }
+}
+
+function buildFailureGroups(files: RunFileDTO[]): FailureGroup[] {
+  const groups = new Map<string, FailureGroup>()
+  for (const file of files) {
+    const key = [file.errorCategory || 'OTHER', file.errorCode || '', file.processingStage || '', file.usedMinerU ? 'mineru' : 'direct'].join('|')
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        key,
+        title: errorTitle(file.errorCode, file.errorCategory, '文件处理失败', file.usedMinerU),
+        code: file.errorCode,
+        summary: errorSummary(file.errorCode, file.errorCategory),
+        stage: meaningfulStage(file.processingStage),
+        count: 0,
+        paths: [],
+        messages: [],
+      }
+      groups.set(key, group)
+    }
+    group.count++
+    if (file.relativePath && !group.paths.includes(file.relativePath)) group.paths.push(file.relativePath)
+    if (file.errorMessage && !group.messages.includes(file.errorMessage)) group.messages.push(file.errorMessage)
+  }
+  return Array.from(groups.values())
 }
 
 function meaningfulStage(stage?: string) {
@@ -277,11 +396,22 @@ async function showTaskError(task: TaskDTO) {
     if (requestId !== errorRequestId || !errorVisible.value) return
 
     const failedFiles = files.filter(isFailedRunFile)
-    const fileWithMessage = failedFiles.find(file => Boolean(file.errorMessage))
-    const failedFile = fileWithMessage || failedFiles[0]
+    const groups = buildFailureGroups(failedFiles)
+    if (failedFiles.length > 1) {
+      const categoryNames = groups.map(group => group.title.replace(/报错$/, ''))
+      selectedError.value = {
+        title: groups.length > 1 ? '任务包含多个处理错误' : groups[0]?.title || '任务执行失败',
+        summary: `共 ${failedFiles.length} 个文件处理失败，涉及 ${groups.length} 类问题：${categoryNames.join('、')}。`,
+        message: '',
+        failureCount: failedFiles.length,
+        groups,
+      }
+      return
+    }
+    const failedFile = failedFiles[0]
     if (failedFile) {
       selectedError.value = {
-        title: errorTitle(failedFile.errorCode, failedFile.errorCategory, '任务执行失败'),
+        title: errorTitle(failedFile.errorCode, failedFile.errorCategory, '任务执行失败', failedFile.usedMinerU),
         category: failedFile.errorCategory,
         code: failedFile.errorCode,
         summary: errorSummary(failedFile.errorCode, failedFile.errorCategory),
@@ -289,11 +419,14 @@ async function showTaskError(task: TaskDTO) {
         message: failedFile.errorMessage || taskMessage || '文件未提供具体错误信息。',
         stage: meaningfulStage(failedFile.processingStage) || meaningfulStage(task.processingStage),
         failureCount: failedFiles.length || task.failedCount || undefined,
+        usedMinerU: failedFile.usedMinerU,
       }
     } else {
       selectedError.value = {
-        title: '任务执行失败',
-        summary: taskMessage || '任务未提供具体错误信息。',
+        title: errorTitle(task.errorCode, task.errorCategory, '任务执行失败'),
+        code: task.errorCode,
+        category: task.errorCategory,
+        summary: task.errorCode ? errorSummary(task.errorCode, task.errorCategory) : taskMessage || '任务未提供具体错误信息。',
         message: taskMessage || '任务未提供具体错误信息。',
         stage: meaningfulStage(task.processingStage),
         failureCount: task.failedCount || undefined,
@@ -303,8 +436,10 @@ async function showTaskError(task: TaskDTO) {
     // 文件详情读取失败时仍保留任务级错误，不让弹窗退化成 INIT 或空白内容。
     if (requestId === errorRequestId && errorVisible.value) {
       selectedError.value = {
-        title: '任务执行失败',
-        summary: taskMessage || '任务未提供具体错误信息。',
+        title: errorTitle(task.errorCode, task.errorCategory, '任务执行失败'),
+        code: task.errorCode,
+        category: task.errorCategory,
+        summary: task.errorCode ? errorSummary(task.errorCode, task.errorCategory) : taskMessage || '任务未提供具体错误信息。',
         message: taskMessage || '任务未提供具体错误信息。',
         stage: meaningfulStage(task.processingStage),
         failureCount: task.failedCount || undefined,
@@ -330,7 +465,7 @@ function showTaskErrorById(taskId: string) {
 function showFileError(file: RunFileDTO) {
   ++errorRequestId
   errorLoading.value = false
-  selectedError.value = { title: errorTitle(file.errorCode, file.errorCategory, '文件处理失败'), category: file.errorCategory, code: file.errorCode, summary: errorSummary(file.errorCode, file.errorCategory), path: file.relativePath, message: file.errorMessage || '文件未提供具体错误信息。', stage: meaningfulStage(file.processingStage) }
+  selectedError.value = { title: errorTitle(file.errorCode, file.errorCategory, '文件处理失败', file.usedMinerU), category: file.errorCategory, code: file.errorCode, summary: errorSummary(file.errorCode, file.errorCategory), path: file.relativePath, message: file.errorMessage || '文件未提供具体错误信息。', stage: meaningfulStage(file.processingStage), usedMinerU: file.usedMinerU }
   errorVisible.value = true
 }
 
@@ -506,8 +641,30 @@ async function control(action: 'pause' | 'resume' | 'stop', taskId: string) {
       </template>
     </el-drawer>
 
-    <el-dialog v-model="errorVisible" title="错误详情" width="520px" destroy-on-close>
-      <div class="error-detail-dialog"><div class="error-detail-title"><AlertTriangle :size="19" /><strong>{{ selectedError.title }}</strong></div><dl><template v-if="selectedError.path"><dt>文件</dt><dd class="mono">{{ selectedError.path }}</dd></template><template v-if="selectedError.failureCount && selectedError.failureCount > 1"><dt>失败文件</dt><dd>共 {{ selectedError.failureCount }} 个文件失败，以下展示其中一条错误</dd></template><template v-if="selectedError.stage"><dt>处理阶段</dt><dd><StatusBadge :status="selectedError.stage" type="file" /></dd></template><dt>处理结果</dt><dd class="error-detail-message">{{ selectedError.summary || selectedError.message || '文件处理失败。' }}<span v-if="errorLoading" class="error-detail-loading">正在读取文件详情…</span></dd><template v-if="selectedError.code"><dt>错误类型</dt><dd>{{ selectedError.code }}</dd></template><template v-if="selectedError.message && selectedError.message !== selectedError.summary"><dt>技术详情</dt><dd class="error-detail-message">{{ selectedError.message }}</dd></template></dl></div>
+    <el-dialog v-model="errorVisible" title="错误详情" :width="selectedError.groups?.length ? '680px' : '520px'" destroy-on-close>
+      <div class="error-detail-dialog">
+        <div class="error-detail-title"><AlertTriangle :size="19" /><strong>{{ selectedError.title }}</strong></div>
+        <dl>
+          <template v-if="selectedError.path"><dt>文件</dt><dd class="mono">{{ selectedError.path }}</dd></template>
+          <template v-if="selectedError.failureCount && selectedError.failureCount > 1"><dt>失败文件</dt><dd>共 {{ selectedError.failureCount }} 个文件失败，已按处理步骤汇总如下</dd></template>
+          <template v-if="selectedError.stage"><dt>处理阶段</dt><dd><StatusBadge :status="selectedError.stage" type="file" /></dd></template>
+          <dt>处理结果</dt><dd class="error-detail-message">{{ selectedError.summary || selectedError.message || '文件处理失败。' }}<span v-if="errorLoading" class="error-detail-loading">正在读取文件详情…</span></dd>
+          <template v-if="selectedError.code"><dt>错误类型</dt><dd>{{ errorCodeLabel(selectedError.code) }}</dd></template>
+          <template v-if="selectedError.message && selectedError.message !== selectedError.summary"><dt>技术详情</dt><dd class="error-detail-message">{{ selectedError.message }}</dd></template>
+        </dl>
+        <div v-if="selectedError.groups?.length" class="failure-group-list">
+          <article v-for="group in selectedError.groups" :key="group.key" class="failure-group">
+            <header><strong>{{ group.title }}</strong><span>{{ group.count }} 个文件</span></header>
+            <div class="failure-group-facts">
+              <span>处理阶段</span><b>{{ stageLabel(group.stage, '未知阶段') }}</b>
+              <span>错误类型</span><b>{{ errorCodeLabel(group.code) || '未分类错误' }}</b>
+              <span>处理结果</span><p>{{ group.summary }}</p>
+              <span>涉及文件</span><p class="mono">{{ group.paths.slice(0, 5).join('\n') }}<template v-if="group.paths.length > 5"><br>另有 {{ group.paths.length - 5 }} 个文件</template></p>
+              <template v-if="group.messages.length"><span>技术详情</span><p class="failure-group-technical">{{ group.messages.join('\n') }}</p></template>
+            </div>
+          </article>
+        </div>
+      </div>
       <template #footer><el-button type="primary" @click="errorVisible = false">知道了</el-button></template>
     </el-dialog>
   </div>

@@ -90,6 +90,8 @@ export interface TaskDTO {
   startedAt?: string
   completedAt?: string
   errorMessage?: string
+  errorCode?: string
+  errorCategory?: string
   reconcileCount?: number
   recoveryCount?: number
   controlReason?: string
@@ -117,6 +119,7 @@ export interface RunFileDTO {
   finalStatus: string
   errorCode?: string
   errorCategory?: string
+  usedMinerU: boolean
   errorMessage?: string
   createdAt: string
   startedAt?: string
@@ -225,7 +228,7 @@ export interface ReconcileDTO {
   fileID?: string; fileId?: string
   folderID?: string; folderId?: string
   folderName: string; relativePath: string
-  processingStage: string; reason: string
+  processingStage: string; errorCode?: string; errorCategory?: string; reason: string
   snapshotPath: string; snapshotMD5: string; snapshotSize: number
   maxKBSourceFileID: string; maxKBBatchTaskID: string; maxKBDocumentID: string
   deletingDocumentID: string; minerUTaskID: string; minerUStatus: string

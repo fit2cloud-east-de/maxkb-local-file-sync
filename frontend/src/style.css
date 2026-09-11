@@ -316,6 +316,14 @@ button.detail-stat:hover { background: var(--surface-muted); border-color: var(-
 .error-detail-dialog dd { min-width: 0; margin: 0; color: var(--text-secondary); word-break: break-word; }
 .error-detail-message { padding: 10px 11px; color: #991b1b !important; background: #fff6f6; border-radius: 7px; line-height: 1.65; white-space: pre-wrap; }
 .error-detail-loading { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.failure-group-list { display: grid; max-height: 52vh; gap: 10px; margin-top: 16px; overflow-y: auto; }
+.failure-group { padding: 12px; border: 1px solid #fecaca; border-radius: 8px; background: #fffafa; }
+.failure-group header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: #991b1b; font-size: 13px; }
+.failure-group header span { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-weight: 400; }
+.failure-group-facts { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 7px 10px; font-size: 12px; }
+.failure-group-facts > span { color: var(--muted); }
+.failure-group-facts b, .failure-group-facts p { min-width: 0; margin: 0; color: var(--text-secondary); font-weight: 400; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-wrap; }
+.failure-group-technical { padding: 8px 9px; border-radius: 6px; color: #991b1b !important; background: #fff1f1; }
 
 @media (max-width: 640px) {
   .detail-meta, .detail-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

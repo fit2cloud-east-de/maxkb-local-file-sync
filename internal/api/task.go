@@ -38,6 +38,8 @@ type TaskDTO struct {
 	StartedAt       string `json:"startedAt,omitempty"`
 	CompletedAt     string `json:"completedAt,omitempty"`
 	ErrorMessage    string `json:"errorMessage,omitempty"`
+	ErrorCode       string `json:"errorCode,omitempty"`
+	ErrorCategory   string `json:"errorCategory,omitempty"`
 	TotalFiles      int    `json:"totalFiles"`
 	SuccessCount    int    `json:"successCount"`
 	FailedCount     int    `json:"failedCount"`
@@ -66,6 +68,8 @@ type ReconcileDTO struct {
 	FolderName         string `json:"folderName"`
 	RelativePath       string `json:"relativePath"`
 	ProcessingStage    string `json:"processingStage"`
+	ErrorCode          string `json:"errorCode,omitempty"`
+	ErrorCategory      string `json:"errorCategory,omitempty"`
 	Reason             string `json:"reason"`
 	SnapshotPath       string `json:"snapshotPath"`
 	SnapshotMD5        string `json:"snapshotMD5"`
@@ -91,6 +95,7 @@ type RunFileDTO struct {
 	FinalStatus     string `json:"finalStatus"`
 	ErrorCode       string `json:"errorCode,omitempty"`
 	ErrorCategory   string `json:"errorCategory,omitempty"`
+	UsedMinerU      bool   `json:"usedMinerU"`
 	ErrorMessage    string `json:"errorMessage,omitempty"`
 	CreatedAt       string `json:"createdAt"`
 	StartedAt       string `json:"startedAt,omitempty"`
@@ -105,7 +110,7 @@ func wrapCreateTaskError(err error) error {
 	if errors.Is(err, service.ErrNoPendingChanges) {
 		return errors.New("NO_PENDING_CHANGES: no pending changes to sync")
 	}
-	return fmt.Errorf("failed to create task: %w", err)
+	return fmt.Errorf("TASK_CREATE_FAILED: 创建同步批次失败：%w", err)
 }
 
 // wrapRetryFailedTaskError keeps retry outcomes stable across the Wails boundary.
@@ -132,7 +137,7 @@ func (api *TaskAPI) CreateTask(folderID string, triggerType string) (*TaskDTO, e
 
 	// 自动加入执行队列
 	if err := api.app.Orchestrator().EnqueueTask(ctx, task.TaskID); err != nil {
-		return nil, fmt.Errorf("failed to enqueue task: %w", err)
+		return nil, fmt.Errorf("TASK_QUEUE_FAILED: 同步批次已保存，但执行服务未正常运行，请重启应用后查看执行队列：%w", err)
 	}
 
 	return api.toTaskDTO(ctx, task)
@@ -148,7 +153,7 @@ func (api *TaskAPI) RetryFailedTask(sourceTaskID string) (*TaskDTO, error) {
 		return nil, wrapRetryFailedTaskError(err)
 	}
 	if err := api.app.Orchestrator().EnqueueTask(ctx, task.TaskID); err != nil {
-		return nil, fmt.Errorf("failed to enqueue retry task: %w", err)
+		return nil, fmt.Errorf("TASK_QUEUE_FAILED: 重新同步批次已保存，但执行服务未正常运行，请重启应用后查看执行队列：%w", err)
 	}
 	return api.toTaskDTO(ctx, task)
 }
@@ -285,7 +290,8 @@ func (api *TaskAPI) ListReconcileRequired() ([]*ReconcileDTO, error) {
 		out = append(out, &ReconcileDTO{
 			RunFileID: x.RunFileID, TaskID: x.TaskID, FileID: x.FileID, FolderID: x.FolderID,
 			FolderName: x.FolderName, RelativePath: x.RelativePath, ProcessingStage: x.ProcessingStage,
-			Reason: x.Reason, SnapshotPath: x.SnapshotPath, SnapshotMD5: x.SnapshotMD5,
+			ErrorCode: x.ErrorCode, ErrorCategory: errorCategory(x.ErrorCode), Reason: x.Reason,
+			SnapshotPath: x.SnapshotPath, SnapshotMD5: x.SnapshotMD5,
 			SnapshotSize: x.SnapshotSize, MaxKBSourceFileID: x.MaxKBSourceFileID,
 			MaxKBBatchTaskID: x.MaxKBBatchTaskID, MaxKBDocumentID: x.MaxKBDocumentID,
 			DeletingDocumentID: x.DeletingDocumentID, MinerUTaskID: x.MinerUTaskID,
@@ -334,6 +340,10 @@ func (api *TaskAPI) toTaskDTO(ctx context.Context, task *repository.SyncTask) (*
 		dto.ControlReason = metadata.ControlReason
 		dto.ErrorSummary = metadata.ErrorSummary
 	}
+	if message := firstNonEmpty(dto.ErrorSummary, dto.ErrorMessage); strings.TrimSpace(message) != "" {
+		dto.ErrorCode = taskErrorCode(message)
+		dto.ErrorCategory = errorCategory(dto.ErrorCode)
+	}
 
 	if task.StartedAt != nil {
 		dto.StartedAt = task.StartedAt.Format(time.RFC3339)
@@ -371,9 +381,19 @@ func errorCategory(code string) string {
 		return "MAXKB_DELETE"
 	case strings.HasPrefix(code, "SNAPSHOT"):
 		return "LOCAL_SNAPSHOT"
+	case code == "CONFIGURATION":
+		return "CONFIGURATION"
+	case code == "UNSUPPORTED_FILE_TYPE":
+		return "UNSUPPORTED_FILE_TYPE"
+	case strings.HasPrefix(code, "TASK_QUEUE"):
+		return "TASK_QUEUE"
+	case strings.HasPrefix(code, "TASK_CREATE"):
+		return "TASK_CREATE"
+	case strings.HasPrefix(code, "LOCAL_STORAGE"), strings.HasPrefix(code, "EXECUTION_INTERNAL"):
+		return "LOCAL_SYSTEM"
 	case code == "SOURCE_CHANGED":
 		return "SOURCE_CHANGED"
-	case code == "RECONCILE_REQUIRED":
+	case code == "RECONCILE_REQUIRED", code == "CRASH_WINDOW_UNKNOWN", code == "RETRY_REQUIRES_RECONCILIATION":
 		return "RECONCILE"
 	case code != "":
 		return "OTHER"
@@ -404,7 +424,12 @@ func (api *TaskAPI) toRunFileDTO(ctx context.Context, rf *repository.RunFile) (*
 				dto.ErrorMessage = attempt.ErrorMessage
 			}
 			dto.ErrorCategory = errorCategory(attempt.ErrorCode)
+			dto.UsedMinerU = strings.TrimSpace(attempt.MinerUTaskID) != ""
 		}
+	}
+	if dto.ErrorCode == "" && strings.TrimSpace(dto.ErrorMessage) != "" {
+		dto.ErrorCode = runFileFallbackErrorCode(dto.ProcessingStage, dto.ErrorMessage)
+		dto.ErrorCategory = errorCategory(dto.ErrorCode)
 	}
 
 	if rf.StartedAt != nil {
@@ -422,4 +447,43 @@ func (api *TaskAPI) toRunFileDTO(ctx context.Context, rf *repository.RunFile) (*
 	}
 
 	return dto, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func taskErrorCode(message string) string {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "queue"), strings.Contains(lower, "enqueue"), strings.Contains(lower, "orchestrator"):
+		return "TASK_QUEUE_FAILED"
+	case strings.Contains(lower, "database"), strings.Contains(lower, "sqlite"), strings.Contains(lower, "repository"), strings.Contains(lower, "durable"), strings.Contains(lower, "commit"):
+		return "LOCAL_STORAGE_FAILED"
+	case strings.Contains(lower, "not configured"), strings.Contains(lower, "configuration"):
+		return "CONFIGURATION"
+	default:
+		return "EXECUTION_INTERNAL_FAILED"
+	}
+}
+
+func runFileFallbackErrorCode(stage, message string) string {
+	switch types.ProcessingStage(stage) {
+	case types.ProcessingStageHashing:
+		return "SNAPSHOT_FAILED"
+	case types.ProcessingStageMinerUPending, types.ProcessingStageMinerURunning:
+		return "MINERU_CONVERT_FAILED"
+	case types.ProcessingStageMaxKBDeleting, types.ProcessingStageMaxKBDeleteCompleted:
+		return "MAXKB_DELETE_FAILED"
+	case types.ProcessingStageMaxKBSplitting:
+		return "MAXKB_SPLIT_FAILED"
+	case types.ProcessingStageMaxKBCreating, types.ProcessingStageMaxKBProcessing:
+		return "MAXKB_CREATE_FAILED"
+	}
+	return taskErrorCode(message)
 }

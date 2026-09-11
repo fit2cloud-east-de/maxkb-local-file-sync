@@ -17,6 +17,30 @@ const busy = ref('')
 const idOf = (item: ReconcileDTO) => item.runFileId || item.runFileID || ''
 const PAGE_CALL_TIMEOUT_MS = 15_000
 
+const errorCategoryLabels: Record<string, string> = {
+  MINERU_CONVERT: 'MinerU 转换',
+  MINERU_DOWNLOAD: 'MinerU 文件下载',
+  MINERU_RESULT: 'MinerU 结果处理',
+  MAXKB_UPLOAD: '文件上传 MaxKB',
+  MAXKB_SPLIT: 'MaxKB 智能分段',
+  MAXKB_CREATE: 'MaxKB 创建文档',
+  MAXKB_DELETE: 'MaxKB 删除文档',
+  LOCAL_SNAPSHOT: '本地文件读取',
+  CONFIGURATION: '服务配置',
+  UNSUPPORTED_FILE_TYPE: '文件格式',
+  SOURCE_CHANGED: '本地文件变化',
+  LOCAL_SYSTEM: '本地存储或执行服务',
+  RECONCILE: '远端状态待人工确认',
+}
+
+function errorType(item: ReconcileDTO) {
+  const category = item.errorCategory === 'MAXKB_SPLIT' && item.minerUTaskID
+    ? 'MinerU 产物上传及 MaxKB 智能分段'
+    : item.errorCategory ? errorCategoryLabels[item.errorCategory] : ''
+  if (category && item.errorCode) return `${category}（${item.errorCode}）`
+  return category || item.errorCode || '远端操作结果不明确'
+}
+
 async function load() {
   if (loading.value) return
   loading.value = true
@@ -109,7 +133,7 @@ onMounted(() => { void load() })
       <article v-for="item in items" :key="idOf(item)" class="panel reconcile-card">
         <div class="panel-title"><div><p class="eyebrow">{{ item.folderName }}</p><h2 class="mono">{{ item.relativePath }}</h2></div><StatusBadge status="RECONCILE_REQUIRED" /></div>
         <p class="reason">{{ item.reason || '远端操作结果未知' }}</p>
-        <dl class="facts"><div><dt>阶段</dt><dd>{{ stageLabel(item.processingStage) }}</dd></div><div><dt>文档 ID</dt><dd class="mono">{{ item.maxKBDocumentID || item.maxKBSourceFileID || '未知' }}</dd></div><div><dt>批次任务</dt><dd class="mono">{{ item.maxKBBatchTaskID || '未知' }}</dd></div><div><dt>快照 MD5</dt><dd class="mono">{{ item.snapshotMD5 || '未知' }}</dd></div></dl>
+        <dl class="facts"><div><dt>阶段</dt><dd>{{ stageLabel(item.processingStage) }}</dd></div><div><dt>异常类型</dt><dd>{{ errorType(item) }}</dd></div><div><dt>文档 ID</dt><dd class="mono">{{ item.maxKBDocumentID || item.maxKBSourceFileID || '未知' }}</dd></div><div><dt>批次任务</dt><dd class="mono">{{ item.maxKBBatchTaskID || '未知' }}</dd></div><div><dt>快照 MD5</dt><dd class="mono">{{ item.snapshotMD5 || '未知' }}</dd></div></dl>
         <div class="actions">
           <button class="btn btn-primary" :disabled="Boolean(busy)" @click="resolve(item, 'REMOTE_SUCCEEDED')">确认远端成功</button>
           <button class="btn btn-secondary" :disabled="Boolean(busy)" @click="resolve(item, 'REMOTE_ABSENT_RETRY')">确认不存在并重试</button>

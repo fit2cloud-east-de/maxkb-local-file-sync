@@ -56,7 +56,7 @@ type RunMetadata struct {
 // of a remote side effect cannot be determined safely.
 type ReconcileItem struct {
 	RunFileID, TaskID, FileID, FolderID, FolderName, RelativePath string
-	ProcessingStage, Reason, SnapshotPath, SnapshotMD5            string
+	ProcessingStage, ErrorCode, Reason, SnapshotPath, SnapshotMD5 string
 	SnapshotSize                                                  int64
 	MaxKBSourceFileID, MaxKBBatchTaskID, MaxKBDocumentID          string
 	DeletingDocumentID, MinerUTaskID, MinerUStatus                string
@@ -1324,8 +1324,17 @@ func (s *ReliabilityStore) SaveAttempt(ctx context.Context, a *FileAttempt) erro
 }
 
 func (s *ReliabilityStore) MarkReconcile(ctx context.Context, runFileID, reason string) error {
+	return s.MarkReconcileWithCode(ctx, runFileID, "RECONCILE_REQUIRED", reason)
+}
+
+// MarkReconcileWithCode preserves the operation-specific failure code while
+// moving an uncertain remote mutation into the manual reconciliation queue.
+func (s *ReliabilityStore) MarkReconcileWithCode(ctx context.Context, runFileID, code, reason string) error {
 	if reason == "" {
 		return errors.New("reconciliation reason is required")
+	}
+	if code == "" {
+		code = "RECONCILE_REQUIRED"
 	}
 	tx, err := s.db.BeginImmediate(ctx)
 	if err != nil {
@@ -1344,7 +1353,7 @@ func (s *ReliabilityStore) MarkReconcile(ctx context.Context, runFileID, reason 
 	if err := rowsAffected(res, "mark run file reconciliation", 1); err != nil {
 		return err
 	}
-	res, err = tx.ExecContext(ctx, `UPDATE file_attempts SET status='RECONCILE_REQUIRED',error_code='RECONCILE_REQUIRED',reconcile_reason=?,error_message=?,completed_at=? WHERE id=(SELECT id FROM file_attempts WHERE run_file_id=? ORDER BY attempt_no DESC LIMIT 1)`, reason, reason, now, runFileID)
+	res, err = tx.ExecContext(ctx, `UPDATE file_attempts SET status='RECONCILE_REQUIRED',error_code=?,reconcile_reason=?,error_message=?,completed_at=? WHERE id=(SELECT id FROM file_attempts WHERE run_file_id=? ORDER BY attempt_no DESC LIMIT 1)`, code, reason, reason, now, runFileID)
 	if err != nil {
 		return err
 	}
@@ -1652,7 +1661,7 @@ func (s *ReliabilityStore) ListReconcile(ctx context.Context) ([]*RunFile, error
 // for an operator to decide whether an ambiguous external operation succeeded.
 func (s *ReliabilityStore) ListReconcileItems(ctx context.Context) ([]*ReconcileItem, error) {
 	rows, err := s.db.Query(`SELECT rf.run_file_id,rf.task_id,rf.file_id,sf.folder_id,f.name,sf.relative_path,
-		rf.processing_stage,COALESCE(NULLIF(a.reconcile_reason,''),rf.error_message,''),
+		rf.processing_stage,COALESCE(a.error_code,''),COALESCE(NULLIF(a.reconcile_reason,''),rf.error_message,''),
 		COALESCE(a.snapshot_path,rf.snapshot_path,''),COALESCE(a.snapshot_md5,rf.snapshot_md5,''),
 		COALESCE(a.snapshot_size,rf.snapshot_size,0),COALESCE(a.maxkb_source_file_id,''),
 		COALESCE(a.maxkb_batch_task_id,''),COALESCE(a.maxkb_document_id,''),
@@ -1671,7 +1680,7 @@ func (s *ReliabilityStore) ListReconcileItems(ctx context.Context) ([]*Reconcile
 	for rows.Next() {
 		x := &ReconcileItem{}
 		if err := rows.Scan(&x.RunFileID, &x.TaskID, &x.FileID, &x.FolderID, &x.FolderName, &x.RelativePath,
-			&x.ProcessingStage, &x.Reason, &x.SnapshotPath, &x.SnapshotMD5, &x.SnapshotSize,
+			&x.ProcessingStage, &x.ErrorCode, &x.Reason, &x.SnapshotPath, &x.SnapshotMD5, &x.SnapshotSize,
 			&x.MaxKBSourceFileID, &x.MaxKBBatchTaskID, &x.MaxKBDocumentID, &x.DeletingDocumentID,
 			&x.MinerUTaskID, &x.MinerUStatus, &x.CreatedAt, &x.CompletedAt); err != nil {
 			return nil, err

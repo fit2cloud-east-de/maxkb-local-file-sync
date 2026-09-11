@@ -165,7 +165,7 @@ func (e *SyncExecutor) executeAddOrUpdate(ctx context.Context, rf *repository.Ru
 			}
 		} else if attempt.MaxKBSourceFileID != "" || attempt.MaxKBBatchTaskID != "" || attempt.MaxKBDocumentID != "" || attempt.MinerUTaskID != "" {
 			if store != nil {
-				if err := store.MarkReconcile(ctx, rf.RunFileID, "durable snapshot is missing or corrupt while remote references exist"); err != nil {
+				if err := store.MarkReconcileWithCode(ctx, rf.RunFileID, "SNAPSHOT_RECONCILE_REQUIRED", "durable snapshot is missing or corrupt while remote references exist"); err != nil {
 					return err
 				}
 			}
@@ -872,7 +872,7 @@ func (e *SyncExecutor) fail(ctx context.Context, rf *repository.RunFile, code, m
 	_, _, s := e.adapters()
 	rf.ErrorMessage = msg
 	if reconcile && s != nil {
-		if err := s.MarkReconcile(ctx, rf.RunFileID, msg); err != nil {
+		if err := s.MarkReconcileWithCode(ctx, rf.RunFileID, code, msg); err != nil {
 			return err
 		}
 	} else if s != nil {
