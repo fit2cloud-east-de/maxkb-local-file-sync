@@ -126,20 +126,13 @@ func (s *MinerUArtifactCleanupService) RunNow(ctx context.Context) (MinerUArtifa
 		_ = s.record(ctx, result, nil)
 		return result, nil
 	}
-	root, err := filepath.Abs(filepath.Clean(settings.ResultSaveDir))
-	if err != nil || !isCrossPlatformAbsolutePath(settings.ResultSaveDir) {
-		return s.finish(ctx, result, fmt.Errorf("MinerU result root must be an absolute path"))
-	}
-	info, err := os.Lstat(root)
+	root, exists, err := resolveExistingArtifactRoot(settings.ResultSaveDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			_ = s.record(ctx, result, nil)
-			return result, nil
-		}
-		return s.finish(ctx, result, fmt.Errorf("stat MinerU result root: %w", err))
+		return s.finish(ctx, result, err)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return s.finish(ctx, result, fmt.Errorf("MinerU result root must be a real directory"))
+	if !exists {
+		_ = s.record(ctx, result, nil)
+		return result, nil
 	}
 
 	runs, err := s.loadRuns(ctx)
@@ -178,6 +171,161 @@ func (s *MinerUArtifactCleanupService) RunNow(ctx context.Context) (MinerUArtifa
 		return result, err
 	}
 	return result, nil
+}
+
+// DeleteFolderArtifacts removes every persisted MinerU batch owned by one
+// sync folder. It runs before the folder row is deleted so durable run IDs are
+// still available for precise ownership checks. Batch IDs are globally unique,
+// which also keeps folders with the same display name isolated.
+func (s *MinerUArtifactCleanupService) DeleteFolderArtifacts(ctx context.Context, folderID string) error {
+	if strings.TrimSpace(folderID) == "" {
+		return fmt.Errorf("sync folder id is required")
+	}
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return fmt.Errorf("MinerU artifact cleanup is already running")
+	}
+	s.running = true
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
+
+	settings, err := s.settingsRepo.GetMinerUArtifactSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("load MinerU artifact settings: %w", err)
+	}
+	root, exists, err := resolveExistingArtifactRoot(settings.ResultSaveDir)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	runs, err := s.loadRuns(ctx)
+	if err != nil {
+		return err
+	}
+	candidates, err := s.findCandidates(root, runs)
+	if err != nil {
+		return err
+	}
+	taskDirectories := make(map[string]struct{})
+	for _, run := range runs {
+		if run.FolderID == folderID && strings.TrimSpace(run.TaskName) != "" {
+			taskDirectories[filepath.Join(root, safePathComponent(run.TaskName, "task name"))] = struct{}{}
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate.info.FolderID != folderID {
+			continue
+		}
+		if err := ensureContainedPath(root, candidate.path); err != nil {
+			return fmt.Errorf("invalid MinerU artifact batch path: %w", err)
+		}
+		parent := filepath.Dir(candidate.path)
+		taskDirectories[parent] = struct{}{}
+		if err := os.RemoveAll(candidate.path); err != nil {
+			return fmt.Errorf("remove MinerU artifact batch: %w", err)
+		}
+	}
+	for taskDirectory := range taskDirectories {
+		if err := removeEmptyArtifactTaskDirectory(root, taskDirectory); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveExistingArtifactRoot(raw string) (string, bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", false, nil
+	}
+	if !isCrossPlatformAbsolutePath(raw) {
+		return "", false, fmt.Errorf("MinerU result root must be an absolute path")
+	}
+	root, err := filepath.Abs(filepath.Clean(raw))
+	if err != nil {
+		return "", false, fmt.Errorf("resolve MinerU result root: %w", err)
+	}
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return root, false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("stat MinerU result root: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", false, fmt.Errorf("MinerU result root must be a real directory")
+	}
+	return root, true, nil
+}
+
+func removeEmptyArtifactTaskDirectory(root, taskDirectory string) error {
+	if err := ensureContainedPath(root, taskDirectory); err != nil {
+		return fmt.Errorf("invalid MinerU artifact task path: %w", err)
+	}
+	rel, err := filepath.Rel(root, taskDirectory)
+	if err != nil || rel == "." || strings.Contains(rel, string(os.PathSeparator)) {
+		return fmt.Errorf("invalid MinerU artifact task directory")
+	}
+	info, err := os.Lstat(taskDirectory)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat MinerU artifact task directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("MinerU artifact task path must be a real directory")
+	}
+	entries, err := os.ReadDir(taskDirectory)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read MinerU artifact task directory: %w", err)
+	}
+	for _, entry := range entries {
+		if !isArtifactDirectoryMetadata(entry.Name()) {
+			continue
+		}
+		metadataPath := filepath.Join(taskDirectory, entry.Name())
+		metadataInfo, err := os.Lstat(metadataPath)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("stat MinerU artifact task directory metadata: %w", err)
+		}
+		if !metadataInfo.Mode().IsRegular() || metadataInfo.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := os.Remove(metadataPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove MinerU artifact task directory metadata: %w", err)
+		}
+	}
+	entries, err = os.ReadDir(taskDirectory)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read MinerU artifact task directory after metadata cleanup: %w", err)
+	}
+	if len(entries) == 0 {
+		if err := os.Remove(taskDirectory); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove empty MinerU artifact task directory: %w", err)
+		}
+	}
+	return nil
+}
+
+func isArtifactDirectoryMetadata(name string) bool {
+	switch name {
+	case ".DS_Store", "._.DS_Store", "Thumbs.db", "desktop.ini":
+		return true
+	default:
+		return false
+	}
 }
 
 type artifactCandidate struct {
@@ -224,9 +372,6 @@ func (s *MinerUArtifactCleanupService) findCandidates(root string, runs map[stri
 			}
 			info, ok := runs[batch.Name()]
 			if !ok {
-				continue
-			}
-			if safePathComponent(info.TaskName, "task name") != task.Name() {
 				continue
 			}
 			path := filepath.Join(root, task.Name(), batch.Name())

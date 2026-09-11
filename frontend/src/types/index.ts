@@ -71,30 +71,6 @@ export interface FolderDTO {
   updatedAt: string
 }
 
-export interface FileDTO {
-  fileId: string
-  folderId: string
-  relativePath: string
-  fileStatus: string
-  observedMd5: string
-  lastSuccessMd5: string
-  lastSuccessUsedMinerU: boolean
-  remoteDocId: string
-  lastSyncedAt?: string
-  lastCheckedAt?: string
-  createdAt: string
-  updatedAt: string
-}
-
-export interface FileStatsDTO {
-  total: number
-  synced: number
-  pending: number
-  stale: number
-  failed: number
-  needsDelete: number
-}
-
 export interface TaskDTO {
   taskId: string
   folderId: string

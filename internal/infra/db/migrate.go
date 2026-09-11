@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -52,6 +53,9 @@ func (db *DB) MigrateUp(migrationsFS fs.FS) error {
 	// older versions are left to their versioned migrations.
 	if err := db.repairReleasedMinerUArtifactSchema(); err != nil {
 		return fmt.Errorf("failed to repair MinerU artifact schema: %w", err)
+	}
+	if err := db.allowSharedSyncFolderSourcesAndTargets(); err != nil {
+		return fmt.Errorf("failed to allow shared sync folder sources and targets: %w", err)
 	}
 
 	return nil
@@ -191,6 +195,152 @@ func (db *DB) repairReleasedMinerUArtifactSchema() error {
 	return nil
 }
 
+// allowSharedSyncFolderSourcesAndTargets removes the legacy uniqueness rules
+// from databases upgraded through migration 16. SQLite cannot drop the UNIQUE
+// clause attached to local_path, so the table must be rebuilt. Foreign keys are
+// disabled only on the dedicated migration connection and are validated before
+// that connection is returned to the pool.
+func (db *DB) allowSharedSyncFolderSourcesAndTargets() (returnErr error) {
+	version, dirty, err := db.GetMigrationVersion()
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		return err
+	}
+	if dirty || version < 16 {
+		return nil
+	}
+
+	var legacyUniqueIndexes int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_index_list('sync_folders')
+		WHERE "unique" = 1
+		  AND (origin = 'u' OR name IN (
+			'uq_sync_folders_normalized_local_path',
+			'uq_sync_folders_remote_binding'
+		  ))`).Scan(&legacyUniqueIndexes); err != nil {
+		return fmt.Errorf("inspect sync folder uniqueness: %w", err)
+	}
+	if legacyUniqueIndexes == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	conn, err := db.conn.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve migration connection: %w", err)
+	}
+	defer conn.Close()
+
+	foreignKeysDisabled := false
+	defer func() {
+		if !foreignKeysDisabled {
+			return
+		}
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("restore foreign key enforcement: %w", err)
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for sync folder rebuild: %w", err)
+	}
+	foreignKeysDisabled = true
+
+	var foreignKeys int
+	if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("verify disabled foreign keys: %w", err)
+	}
+	if foreignKeys != 0 {
+		return errors.New("foreign keys remained enabled during sync folder rebuild")
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin sync folder rebuild: %w", err)
+	}
+	rebuildSQL := `
+		CREATE TABLE sync_folders_rebuild (
+			folder_id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			local_path TEXT NOT NULL,
+			kb_id TEXT NOT NULL,
+			workspace_id TEXT NOT NULL,
+			enable_mineru INTEGER NOT NULL DEFAULT 0,
+			mineru_mode TEXT,
+			mineru_endpoint TEXT,
+			cron_expression TEXT,
+			cron_enabled INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			disabled_at TEXT,
+			sync_delete_local_removed INTEGER NOT NULL DEFAULT 0,
+			mineru_retry_count INTEGER NOT NULL DEFAULT 3,
+			mineru_request_timeout_ms INTEGER NOT NULL DEFAULT 60000,
+			mineru_task_timeout_ms INTEGER NOT NULL DEFAULT 300000,
+			mineru_poll_interval_ms INTEGER NOT NULL DEFAULT 2000,
+			mineru_save_full_result INTEGER NOT NULL DEFAULT 0,
+			mineru_result_save_dir TEXT NOT NULL DEFAULT '',
+			include_patterns TEXT NOT NULL DEFAULT '',
+			exclude_patterns TEXT NOT NULL DEFAULT '',
+			mineru_file_extensions TEXT NOT NULL DEFAULT '',
+			next_execution_at TEXT,
+			normalized_local_path TEXT NOT NULL DEFAULT '',
+			maxkb_base_url_snapshot TEXT NOT NULL DEFAULT '',
+			normalized_maxkb_base_url TEXT NOT NULL DEFAULT '',
+			workspace_name TEXT NOT NULL DEFAULT '',
+			knowledge_folder_id TEXT NOT NULL DEFAULT '',
+			knowledge_name TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		INSERT INTO sync_folders_rebuild (
+			folder_id,name,local_path,kb_id,workspace_id,enable_mineru,
+			mineru_mode,mineru_endpoint,cron_expression,cron_enabled,enabled,
+			disabled_at,sync_delete_local_removed,mineru_retry_count,
+			mineru_request_timeout_ms,mineru_task_timeout_ms,mineru_poll_interval_ms,
+			mineru_save_full_result,mineru_result_save_dir,include_patterns,
+			exclude_patterns,mineru_file_extensions,next_execution_at,
+			normalized_local_path,maxkb_base_url_snapshot,normalized_maxkb_base_url,
+			workspace_name,knowledge_folder_id,knowledge_name,created_at,updated_at
+		)
+		SELECT
+			folder_id,name,local_path,kb_id,workspace_id,enable_mineru,
+			mineru_mode,mineru_endpoint,cron_expression,cron_enabled,enabled,
+			disabled_at,sync_delete_local_removed,mineru_retry_count,
+			mineru_request_timeout_ms,mineru_task_timeout_ms,mineru_poll_interval_ms,
+			mineru_save_full_result,mineru_result_save_dir,include_patterns,
+			exclude_patterns,mineru_file_extensions,next_execution_at,
+			normalized_local_path,maxkb_base_url_snapshot,normalized_maxkb_base_url,
+			workspace_name,knowledge_folder_id,knowledge_name,created_at,updated_at
+		FROM sync_folders;
+		DROP TABLE sync_folders;
+		ALTER TABLE sync_folders_rebuild RENAME TO sync_folders;
+		CREATE INDEX idx_sync_folders_kb ON sync_folders(kb_id);
+		CREATE INDEX idx_sync_folders_cron ON sync_folders(cron_enabled);
+		CREATE INDEX idx_sync_folders_enabled ON sync_folders(enabled) WHERE enabled = 1;
+	`
+	if _, err := tx.ExecContext(ctx, rebuildSQL); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("rebuild sync folders: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sync folder rebuild: %w", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("restore foreign key enforcement: %w", err)
+	}
+	foreignKeysDisabled = false
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("check foreign keys after sync folder rebuild: %w", err)
+	}
+	if foreignKeys != 0 {
+		return fmt.Errorf("sync folder rebuild left %d foreign key violations", foreignKeys)
+	}
+	return nil
+}
+
 func (db *DB) tableColumns(table string) (map[string]struct{}, error) {
 	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
@@ -263,7 +413,7 @@ func (db *DB) InitSchema() error {
 CREATE TABLE IF NOT EXISTS sync_folders (
     folder_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    local_path TEXT NOT NULL UNIQUE,
+	    local_path TEXT NOT NULL,
     kb_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     enable_mineru INTEGER NOT NULL DEFAULT 0,
@@ -513,8 +663,6 @@ CREATE TABLE IF NOT EXISTS operation_history (
 CREATE INDEX IF NOT EXISTS idx_sync_folders_kb ON sync_folders(kb_id);
 CREATE INDEX IF NOT EXISTS idx_sync_folders_cron ON sync_folders(cron_enabled);
 CREATE INDEX IF NOT EXISTS idx_sync_folders_enabled ON sync_folders(enabled) WHERE enabled = 1;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_folders_normalized_local_path ON sync_folders(normalized_local_path);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_folders_remote_binding ON sync_folders(normalized_maxkb_base_url, workspace_id, kb_id);
 DROP INDEX IF EXISTS uq_sync_files_normalized_path;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_files_normalized_path ON sync_files(folder_id, normalized_relative_path) WHERE normalized_relative_path <> '';
 CREATE INDEX IF NOT EXISTS idx_job_queue_claimable ON job_queue(available_at, priority, queued_at, id);
@@ -628,8 +776,6 @@ SELECT id,task_id,10,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP FROM sync_runs WHERE st
 CREATE UNIQUE INDEX IF NOT EXISTS uq_active_task_locks_run ON active_task_locks(run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_active_task_locks_folder ON active_task_locks(folder_id);
 CREATE INDEX IF NOT EXISTS idx_sync_folders_enabled ON sync_folders(enabled) WHERE enabled = 1;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_folders_normalized_local_path ON sync_folders(normalized_local_path);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_folders_remote_binding ON sync_folders(normalized_maxkb_base_url, workspace_id, kb_id);
 DROP INDEX IF EXISTS uq_sync_files_normalized_path;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_files_normalized_path ON sync_files(folder_id, normalized_relative_path) WHERE normalized_relative_path <> '';
 CREATE INDEX IF NOT EXISTS idx_job_queue_claimable ON job_queue(available_at, priority, queued_at, id);

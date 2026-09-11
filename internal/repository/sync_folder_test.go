@@ -2,8 +2,6 @@ package repository
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -122,13 +120,6 @@ func TestSyncFolderRepositoryPersistsMaxKBSnapshotsAndNormalizesIdentity(t *test
 		t.Fatalf("normalized local path = %q", normalizedPath)
 	}
 
-	byPath, err := repo.GetByLocalPath(ctx, `C:\Users\alice\Docs`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if byPath.FolderID != folder.FolderID {
-		t.Fatalf("path lookup folder = %q, want %q", byPath.FolderID, folder.FolderID)
-	}
 }
 
 func TestSyncFolderRepositoryUpdateKeepsBindingSnapshots(t *testing.T) {
@@ -178,26 +169,23 @@ func TestSyncFolderRepositoryUpdateKeepsBindingSnapshots(t *testing.T) {
 	}
 }
 
-func TestSyncFolderRepositoryRejectsDuplicateNormalizedLocalPathWithoutSQLLeak(t *testing.T) {
+func TestSyncFolderRepositoryAllowsSharedLocalPathAndRemoteTarget(t *testing.T) {
 	ctx, _, repo := newSyncFolderRepositoryFixture(t)
 	now := time.Now().UTC()
-	first := &SyncFolder{
-		FolderID: "folder-existing", Name: "已有任务", LocalPath: "/tmp/same-folder",
-		KBId: "kb-1", WorkspaceID: "ws-1", CreatedAt: now, UpdatedAt: now,
-	}
-	if err := repo.Create(ctx, first); err != nil {
-		t.Fatal(err)
-	}
-
-	duplicate := &SyncFolder{
-		FolderID: "folder-duplicate", Name: "重复任务", LocalPath: "/tmp\\same-folder",
-		KBId: "kb-2", WorkspaceID: "ws-2", CreatedAt: now, UpdatedAt: now,
-	}
-	err := repo.Create(ctx, duplicate)
-	if !errors.Is(err, ErrSyncFolderPathConflict) {
-		t.Fatalf("error=%v, want ErrSyncFolderPathConflict", err)
-	}
-	if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-		t.Fatalf("database constraint details leaked: %v", err)
+	for _, folder := range []*SyncFolder{
+		{
+			FolderID: "folder-a", Name: "任务 A", LocalPath: "/tmp/shared-folder",
+			KBId: "kb-1", WorkspaceID: "ws-1", MaxKBBaseURLSnapshot: "https://maxkb.example.test",
+			CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			FolderID: "folder-b", Name: "任务 B", LocalPath: "/tmp/shared-folder",
+			KBId: "kb-1", WorkspaceID: "ws-1", MaxKBBaseURLSnapshot: "https://maxkb.example.test/",
+			CreatedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := repo.Create(ctx, folder); err != nil {
+			t.Fatalf("create %s: %v", folder.FolderID, err)
+		}
 	}
 }

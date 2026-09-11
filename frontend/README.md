@@ -16,7 +16,6 @@
 
 - `src/views/FoldersView.vue`：同步任务、工作空间/知识库选择、目录绑定、文件匹配预览。
 - `src/views/TasksView.vue`：持久化队列、批次控制和文件明细。
-- `src/views/FolderFilesView.vue`：单任务文件状态。
 - `src/views/ReconcileView.vue`：处理 `RECONCILE_REQUIRED`。
 - `src/views/SettingsView.vue`：MaxKB、MinerU 配置和连接测试。
 

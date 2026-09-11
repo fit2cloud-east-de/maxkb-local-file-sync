@@ -18,8 +18,6 @@ export function CreateKnowledgeBase(arg1:api.CreateKnowledgeBaseDTO):Promise<api
 
 export function CreateTask(arg1:string,arg2:string):Promise<api.TaskDTO>;
 
-export function DeleteFile(arg1:string):Promise<void>;
-
 export function DeleteFolder(arg1:string):Promise<void>;
 
 export function DetectChanges(arg1:string):Promise<string>;
@@ -31,8 +29,6 @@ export function EnableTask(arg1:string):Promise<void>;
 export function GetAppVersion():Promise<string>;
 
 export function GetDataDirectory():Promise<string>;
-
-export function GetFileStats(arg1:string):Promise<api.FileStatsDTO>;
 
 export function GetFolder(arg1:string):Promise<api.FolderDTO>;
 
@@ -54,17 +50,11 @@ export function Greet(arg1:string):Promise<string>;
 
 export function ListEmbeddingModels(arg1:string):Promise<Array<api.EmbeddingModelDTO>>;
 
-export function ListFiles(arg1:string):Promise<Array<api.FileDTO>>;
-
-export function ListFilesByStatus(arg1:string,arg2:string):Promise<Array<api.FileDTO>>;
-
 export function ListFolders():Promise<Array<api.FolderDTO>>;
 
 export function ListKnowledgeBases(arg1:string):Promise<Array<api.KnowledgeBaseDTO>>;
 
 export function ListKnowledgeFolders(arg1:string):Promise<Array<api.KnowledgeFolderDTO>>;
-
-export function ListPendingFiles(arg1:string):Promise<Array<api.FileDTO>>;
 
 export function ListReconcileRequired():Promise<Array<api.ReconcileDTO>>;
 

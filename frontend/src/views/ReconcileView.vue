@@ -99,7 +99,7 @@ onMounted(() => { void load() })
 <template>
   <div class="view-page">
     <header class="page-header">
-      <div><p class="eyebrow">人工干预</p><h1>异常处理</h1><p class="muted">不确定的上传、批次创建或删除操作不会自动重试，必须由人工明确决策后处理。</p></div>
+      <div><h1>异常处理</h1></div>
       <button class="btn btn-secondary" :disabled="loading" @click="load">↻ 刷新</button>
     </header>
     <div v-if="loading" class="loading">加载中…</div>

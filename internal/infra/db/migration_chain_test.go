@@ -62,7 +62,7 @@ func TestMigrationSourcesMatch(t *testing.T) {
 	}
 }
 
-func TestMigrationChainV1ToV15(t *testing.T) {
+func TestMigrationChainV1ToV16(t *testing.T) {
 	database, err := New(Config{DataDir: t.TempDir(), DBName: "migration.db"})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestMigrationChainV1ToV15(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 15 || dirty {
+	if version != 16 || dirty {
 		t.Fatalf("version=%d dirty=%v", version, dirty)
 	}
 
@@ -133,8 +133,6 @@ func TestMigrationChainV1ToV15(t *testing.T) {
 		"uq_active_task_locks_folder",
 		"uq_active_task_locks_run",
 		"idx_active_task_locks_status",
-		"uq_sync_folders_normalized_local_path",
-		"uq_sync_folders_remote_binding",
 		"uq_sync_files_normalized_path",
 		"idx_job_queue_claimable",
 		"idx_sync_runs_checkpoint",
@@ -147,6 +145,32 @@ func TestMigrationChainV1ToV15(t *testing.T) {
 			t.Fatalf("missing index %s", indexName)
 		}
 	}
+	var folderUniquenessIndexCount int
+	if err := database.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='index' AND name IN (
+			'uq_sync_folders_normalized_local_path',
+			'uq_sync_folders_remote_binding'
+		)`).Scan(&folderUniquenessIndexCount); err != nil {
+		t.Fatal(err)
+	}
+	if folderUniquenessIndexCount != 0 {
+		t.Fatal("sync tasks must allow shared local paths and remote targets")
+	}
+	for _, values := range [][]string{
+		{"shared-target-a", "/tmp/shared-local"},
+		{"shared-target-b", "/tmp/shared-local"},
+	} {
+		if _, err := database.Exec(`
+			INSERT INTO sync_folders(
+				folder_id,name,local_path,normalized_local_path,kb_id,workspace_id,
+				normalized_maxkb_base_url,created_at,updated_at
+			) VALUES(?,?,?,?,?,?,?,?,?)`,
+			values[0], values[0], values[1], values[1], "shared-kb", "shared-workspace",
+			"https://maxkb.example.test", "2026-09-11T00:00:00Z", "2026-09-11T00:00:00Z"); err != nil {
+			t.Fatalf("insert folder sharing remote target: %v", err)
+		}
+	}
 
 	if err := database.CheckForeignKeys(); err != nil {
 		t.Fatalf("foreign key check failed after migration: %v", err)
@@ -154,6 +178,75 @@ func TestMigrationChainV1ToV15(t *testing.T) {
 	// Running the production migration entry point again must be a no-op.
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("second migrate up: %v", err)
+	}
+}
+
+func TestMigrationV16PreservesFolderRelationsAndAllowsSharedSource(t *testing.T) {
+	database, err := New(Config{DataDir: t.TempDir(), DBName: "shared-source-upgrade.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	v15Migrations := fstest.MapFS{}
+	entries, err := fs.ReadDir(MigrationsFS, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), "000016_") {
+			continue
+		}
+		path := filepath.ToSlash(filepath.Join("migrations", entry.Name()))
+		data, err := fs.ReadFile(MigrationsFS, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v15Migrations[path] = &fstest.MapFile{Data: data}
+	}
+	if err := database.MigrateUp(v15Migrations); err != nil {
+		t.Fatalf("migrate to v15: %v", err)
+	}
+
+	const createdAt = "2026-09-11T00:00:00Z"
+	if _, err := database.Exec(`
+		INSERT INTO sync_folders(
+			folder_id,name,local_path,normalized_local_path,kb_id,workspace_id,
+			maxkb_base_url_snapshot,normalized_maxkb_base_url,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"folder-existing", "已有任务", "/tmp/shared-source", "/tmp/shared-source",
+		"kb-1", "ws-1", "https://maxkb.example.test", "https://maxkb.example.test",
+		createdAt, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO sync_files(file_id,folder_id,relative_path,file_status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?)`, "file-existing", "folder-existing", "document.pdf", "SYNCED", createdAt, createdAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.MigrateUp(MigrationsFS); err != nil {
+		t.Fatalf("migrate to v16: %v", err)
+	}
+	var relatedFiles int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM sync_files WHERE folder_id='folder-existing'`).Scan(&relatedFiles); err != nil {
+		t.Fatal(err)
+	}
+	if relatedFiles != 1 {
+		t.Fatalf("related files=%d, want 1 after sync folder rebuild", relatedFiles)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO sync_folders(
+			folder_id,name,local_path,normalized_local_path,kb_id,workspace_id,
+			maxkb_base_url_snapshot,normalized_maxkb_base_url,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"folder-duplicate", "重复来源任务", "/tmp/shared-source", "/tmp/shared-source",
+		"kb-1", "ws-1", "https://maxkb.example.test", "https://maxkb.example.test",
+		createdAt, createdAt); err != nil {
+		t.Fatalf("create task sharing local source and target: %v", err)
+	}
+	if err := database.CheckForeignKeys(); err != nil {
+		t.Fatalf("foreign keys after v16 rebuild: %v", err)
 	}
 }
 
@@ -166,7 +259,7 @@ func TestCloseBehaviorPromptMigrationResetsLegacyPreference(t *testing.T) {
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("initial migrate up: %v", err)
 	}
-	if err := database.MigrateDown(MigrationsFS, 1); err != nil {
+	if err := database.MigrateDown(MigrationsFS, 2); err != nil {
 		t.Fatalf("migrate down to v14: %v", err)
 	}
 	if _, err := database.Exec(`UPDATE system_settings SET close_behavior = 'exit' WHERE id = 1`); err != nil {
@@ -194,7 +287,7 @@ func TestProcessingRouteMigrationBackfillsLatestSuccessfulAttempt(t *testing.T) 
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("initial migrate up: %v", err)
 	}
-	if err := database.MigrateDown(MigrationsFS, 3); err != nil {
+	if err := database.MigrateDown(MigrationsFS, 4); err != nil {
 		t.Fatalf("migrate down to v12: %v", err)
 	}
 
@@ -308,8 +401,8 @@ func TestMigrateUpRepairsV8DatabaseMissingMinerUArtifactColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 15 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v15 clean", version, dirty)
+	if version != 16 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v16 clean", version, dirty)
 	}
 
 	for _, column := range []string{
@@ -433,7 +526,7 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err := database.MigrateUp(MigrationsFS); err != nil {
 		t.Fatalf("initial migrate up: %v", err)
 	}
-	if err := database.MigrateDown(MigrationsFS, 11); err != nil {
+	if err := database.MigrateDown(MigrationsFS, 12); err != nil {
 		t.Fatalf("migrate down to v4: %v", err)
 	}
 	version, dirty, err := database.GetMigrationVersion()
@@ -454,8 +547,8 @@ func TestMigrateUpRepairsKnownV1DirtyV4Schema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 15 || dirty {
-		t.Fatalf("version=%d dirty=%v, want v15 clean", version, dirty)
+	if version != 16 || dirty {
+		t.Fatalf("version=%d dirty=%v, want v16 clean", version, dirty)
 	}
 
 	for _, column := range []string{"mineru_save_full_result", "mineru_result_save_dir", "mineru_cleanup_temp_results"} {

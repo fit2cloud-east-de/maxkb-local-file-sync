@@ -1,6 +1,5 @@
 <script lang="ts" setup>
 import { computed, ref, watch, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { useFoldersStore } from '../stores/folders'
 import { useTasksStore } from '../stores/tasks'
 import { useConfigStore } from '../stores/config'
@@ -11,7 +10,6 @@ import { errorMessage, isNoPendingChangesError, withTimeout } from '../stores/st
 import { ElMessageBox } from 'element-plus'
 import { notifyError, notifySuccess, notifyWarning } from '../utils/notify'
 
-const router = useRouter()
 const foldersStore = useFoldersStore()
 const tasksStore = useTasksStore()
 const configStore = useConfigStore()
@@ -34,6 +32,7 @@ const loadingWs = ref(false)
 const loadingKb = ref(false)
 const loadingFolders = ref(false)
 const loadingModels = ref(false)
+const resolvingWorkspaceNames = ref(false)
 const wsError = ref('')
 const kbError = ref('')
 const folderError = ref('')
@@ -75,11 +74,6 @@ const previewMineruFileSet = computed(() => new Set(
 ))
 const previewMineruCount = computed(() => form.value.enableMinerU ? (previewResult.value?.mineruCount ?? 0) : 0)
 
-const mineruModeLabel = computed(() => configStore.minerUConfig.mode === 'internal' ? '内网 MinerU' : '在线 MinerU')
-const mineruConfigHint = computed(() => configStore.minerUConfig.enabled
-  ? `服务模式、服务地址和访问凭据统一使用系统设置（当前为${mineruModeLabel.value}）。`
-  : '服务模式、服务地址和访问凭据统一使用系统设置；当前 MinerU 未启用。')
-
 onMounted(() => {
   // App.vue 负责首屏初始化。这里仅在确实没有首屏请求时补一次，避免
   // Wails 重启/热更新时同一接口被两个请求同时占用，导致列表长期停留在 skeleton。
@@ -111,6 +105,10 @@ async function loadWorkspaces() {
   try {
     const result = await withTimeout(() => App.ListWorkspaces(), '读取工作空间', PAGE_CALL_TIMEOUT_MS)
     workspaces.value = (result ?? []) as WorkspaceDTO[]
+    const namesById = new Map(workspaces.value.map(workspace => [workspace.id, workspace.name]))
+    for (const folder of foldersStore.folders) {
+      if (!folder.workspaceName) folder.workspaceName = namesById.get(folder.workspaceId) || ''
+    }
   } catch (e: any) {
     wsError.value = errorMessage(e, '读取工作空间失败')
     workspaces.value = []
@@ -183,6 +181,12 @@ async function loadKnowledgeBases(workspaceId: string) {
     loadingKb.value = false
   }
 }
+
+watch(() => foldersStore.folders, (folders) => {
+  if (resolvingWorkspaceNames.value || !folders.some(folder => folder.workspaceId && !folder.workspaceName)) return
+  resolvingWorkspaceNames.value = true
+  void loadWorkspaces().finally(() => { resolvingWorkspaceNames.value = false })
+}, { immediate: true })
 
 // 工作空间变化时自动加载知识库
 watch(() => form.value.workspaceId, async (newId) => {
@@ -266,6 +270,14 @@ function validateRequiredFields() {
     modalError.value = '请输入任务名称'
     return false
   }
+  const normalizedName = form.value.name.trim().toLocaleLowerCase()
+  const duplicateName = foldersStore.folders.some(folder => (
+    folder.folderId !== editingId.value && folder.name.trim().toLocaleLowerCase() === normalizedName
+  ))
+  if (duplicateName) {
+    modalError.value = '同步任务名称已存在，请使用其他名称'
+    return false
+  }
   if (!form.value.localPath.trim()) {
     modalError.value = '请选择本地文件夹'
     return false
@@ -339,10 +351,6 @@ async function syncFolder(folderId: string) {
   } finally {
     syncingId.value = null
   }
-}
-
-function viewFiles(folderId: string) {
-  router.push({ name: 'FolderFiles', params: { folderId } })
 }
 
 // 打开新建知识库对话框
@@ -494,24 +502,24 @@ async function previewFileMatch() {
 <template>
   <div class="view-page">
     <header class="page-header">
-      <div><p class="eyebrow">工作区</p><h1>同步任务</h1><p class="muted">选择本地文件夹，递归、增量地同步到指定 MaxKB 知识库。</p></div>
+      <div><h1>同步任务</h1></div>
       <el-button type="primary" @click="openCreate"><FolderPlus :size="16" /> 新建</el-button>
     </header>
 
     <div v-if="foldersStore.loading && foldersStore.folders.length === 0" class="loading"><el-skeleton :rows="4" animated /></div>
-    <div v-else-if="foldersStore.error" class="error-msg">{{ foldersStore.error }}</div>
+    <div v-else-if="foldersStore.error && foldersStore.folders.length === 0" class="error-msg">{{ foldersStore.error }}</div>
     <div v-else-if="foldersStore.folders.length === 0" class="empty-state"><FolderOpen :size="34" /><h3>还没有同步任务</h3><p>创建第一个任务，开始把本地资料同步到 MaxKB。</p><el-button type="primary" @click="openCreate"><FolderPlus :size="15" /> 创建同步任务</el-button></div>
     <div v-else class="folders-grid">
-      <FolderCard v-for="folder in foldersStore.folders" :key="folder.folderId" :folder="folder" :busy="syncingId === folder.folderId" :processing="activeFolderIds.has(folder.folderId)" @sync="syncFolder" @files="viewFiles" @edit="openEdit" @delete="deleteFolder" @toggle-enabled="toggleEnabled" />
+      <FolderCard v-for="folder in foldersStore.folders" :key="folder.folderId" :folder="folder" :busy="syncingId === folder.folderId" :processing="activeFolderIds.has(folder.folderId)" :workspace-name-loading="resolvingWorkspaceNames || loadingWs" @sync="syncFolder" @edit="openEdit" @delete="deleteFolder" @toggle-enabled="toggleEnabled" />
     </div>
 
     <el-dialog v-model="showModal" :title="editingId ? '编辑同步任务' : '新建'" width="720px" destroy-on-close>
       <div v-if="modalError" class="notice warning modal-error"><AlertTriangle :size="16" /> {{ modalError }}</div>
       <form class="folder-modal-form" @submit.prevent="saveFolder">
-        <section class="form-section"><h3 class="form-section-title">基础信息</h3><div class="form-grid"><div><div class="field-label">任务名称</div><el-input v-model="form.name" placeholder="例如：产品文档同步" required /></div><div><div class="field-label"><span>本地文件夹 <b class="required-mark" aria-hidden="true">*</b></span></div><div class="path-field"><el-input v-model="form.localPath" placeholder="选择本地目录" readonly required :aria-required="true" /><el-button plain type="primary" @click="selectDirectory">选择目录</el-button></div></div><div><div class="field-label"><span>目标工作区 <b class="required-mark" aria-hidden="true">*</b></span><small v-if="loadingWs">加载中…</small></div><el-select v-model="form.workspaceId" placeholder="选择目标工作区" filterable :loading="loadingWs" :no-data-text="loadingWs ? '正在加载工作空间…' : (wsError ? 'MaxKB 连接不可用' : '暂无可用工作空间')" :aria-required="true" style="width:100%"><el-option v-for="ws in workspaces" :key="ws.id" :label="ws.name" :value="ws.id" /></el-select><span v-if="wsError" class="form-hint danger-text">{{ wsError }}，请先到“系统设置”测试并保存 MaxKB 连接。</span></div><div><div class="field-label"><span>知识库 <b class="required-mark" aria-hidden="true">*</b></span><small v-if="loadingKb">加载中…</small></div><div class="path-field"><el-select v-model="form.kbId" placeholder="选择知识库" filterable :loading="loadingKb" :disabled="!form.workspaceId" :aria-required="true" style="width:100%"><el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" /></el-select><el-button plain :disabled="!form.workspaceId" @click="openCreateKb">新建</el-button></div><span v-if="kbError" class="form-hint danger-text">{{ kbError }}</span><span v-if="form.knowledgeFolderId" class="form-hint">目录 ID：{{ form.knowledgeFolderId }}</span></div></div></section>
-        <section class="form-section"><h3 class="form-section-title">调度与删除策略</h3><div class="form-grid"><div><div class="field-label">定时同步</div><el-switch v-model="form.cronEnabled" active-text="启用 Cron" /></div><div v-if="form.cronEnabled"><div class="field-label">Cron 表达式 <small>标准 5 段格式</small></div><el-input v-model="form.cronExpression" placeholder="0 * * * *" @blur="validateCron" /><span v-if="cronError" class="form-hint danger-text">{{ cronError }}</span></div><div class="wide"><el-checkbox v-model="form.syncDeleteLocalRemoved">同步删除本地已删除文件</el-checkbox><span class="form-hint">关闭时远端文档保留，本地文件重新出现且指纹相同不会重复上传。</span></div></div></section>
+        <section class="form-section"><h3 class="form-section-title">基础信息</h3><div class="form-grid"><div><div class="field-label">任务名称</div><el-input v-model="form.name" placeholder="例如：产品文档同步" required /></div><div><div class="field-label"><span>本地文件夹 <b class="required-mark" aria-hidden="true">*</b></span></div><div class="path-field"><el-input v-model="form.localPath" placeholder="选择本地目录" readonly required :aria-required="true" /><el-button plain type="primary" @click="selectDirectory">选择目录</el-button></div></div><div><div class="field-label"><span>目标工作区 <b class="required-mark" aria-hidden="true">*</b></span><small v-if="loadingWs">加载中…</small></div><el-select v-model="form.workspaceId" placeholder="选择目标工作区" filterable :loading="loadingWs" :no-data-text="loadingWs ? '正在加载工作空间…' : (wsError ? 'MaxKB 连接不可用' : '暂无可用工作空间')" :aria-required="true" style="width:100%"><el-option v-for="ws in workspaces" :key="ws.id" :label="ws.name" :value="ws.id" /></el-select><span v-if="wsError" class="form-hint danger-text">{{ wsError }}，请先到“系统设置”测试并保存 MaxKB 连接。</span></div><div><div class="field-label"><span>知识库 <b class="required-mark" aria-hidden="true">*</b></span><small v-if="loadingKb">加载中…</small></div><div class="path-field"><el-select v-model="form.kbId" placeholder="选择知识库" filterable :loading="loadingKb" :disabled="!form.workspaceId" :aria-required="true" style="width:100%"><el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" /></el-select><el-button plain :disabled="!form.workspaceId" @click="openCreateKb">新建</el-button></div><span v-if="kbError" class="form-hint danger-text">{{ kbError }}</span></div></div></section>
+        <section class="form-section"><h3 class="form-section-title">调度与删除策略</h3><div class="form-grid"><div><div class="field-label">定时同步</div><el-switch v-model="form.cronEnabled" active-text="启用 Cron" /></div><div v-if="form.cronEnabled"><div class="field-label">Cron 表达式 <small>标准 5 段格式</small></div><el-input v-model="form.cronExpression" placeholder="0 * * * *" @blur="validateCron" /><span v-if="cronError" class="form-hint danger-text">{{ cronError }}</span></div><div class="wide"><el-checkbox v-model="form.syncDeleteLocalRemoved">同步删除本地已删除文件</el-checkbox></div></div></section>
         <section class="form-section"><h3 class="form-section-title">文件筛选</h3><div class="form-grid"><div><div class="field-label">Include 正则 <small>每行一个，留空表示全部</small></div><el-input v-model="form.includePatterns" type="textarea" :rows="3" placeholder="^docs/&#10;\\.md$" /></div><div><div class="field-label">Exclude 正则 <small>排除优先级更高</small></div><el-input v-model="form.excludePatterns" type="textarea" :rows="3" placeholder="^tmp/&#10;\\.log$" /></div><div class="wide"><el-button plain @click="previewFileMatch" :loading="previewLoading" :disabled="!form.localPath"><Search :size="15" /> 预览匹配结果</el-button><span v-if="previewError" class="form-hint danger-text">{{ previewError }}</span></div></div></section>
-        <section class="form-section"><div class="settings-inline-title"><div><h3 class="form-section-title">MinerU 文档转换</h3><p class="form-hint">对选定扩展名先通过 MinerU 转换，并将结果 ZIP 直接提交 MaxKB。</p></div><el-switch v-model="form.enableMinerU" /></div><div v-if="form.enableMinerU" class="mineru-config"><div class="form-hint">{{ mineruConfigHint }} MaxKB 支持 TXT、Markdown、PDF、DOCX、HTML、XLS、XLSX、CSV、ZIP 直接上传；其他格式可先交给 MinerU 转换。</div><div class="mineru-fields-grid"><div><div class="field-label">MinerU 转换范围 <small>逗号分隔</small></div><el-input v-model="form.mineruFileExtensions" placeholder="例如：.pptx, .png, .doc 或 *" /><span class="form-hint">留空时，原生格式直接上传，其他格式自动显示为 MinerU；填写后仅转换命中的扩展名。</span></div><div><div class="field-label">失败重试次数</div><el-input-number v-model="form.mineruRetryCount" :min="0" :max="10" controls-position="right" /></div><div><div class="field-label">轮询间隔（毫秒）</div><el-input-number v-model="form.mineruPollInterval" :min="500" :max="60000" :step="500" controls-position="right" /></div></div></div></section>
+        <section class="form-section"><div class="settings-inline-title"><h3 class="form-section-title">MinerU 文档转换</h3><el-switch v-model="form.enableMinerU" /></div><div v-if="form.enableMinerU" class="mineru-config"><div class="mineru-fields-grid"><div><div class="field-label">MinerU 转换范围 <small>逗号分隔</small></div><el-input v-model="form.mineruFileExtensions" placeholder="例如：.pptx, .png, .doc 或 *" /><span class="form-hint">留空时，原生格式直接上传，其他格式自动显示为 MinerU；填写后仅转换命中的扩展名。</span></div><div><div class="field-label">失败重试次数</div><el-input-number v-model="form.mineruRetryCount" :min="0" :max="10" controls-position="right" /></div><div><div class="field-label">轮询间隔（毫秒）</div><el-input-number v-model="form.mineruPollInterval" :min="500" :max="60000" :step="500" controls-position="right" /></div></div></div></section>
         <div class="dialog-footer-actions"><el-button @click="showModal = false">取消</el-button><el-button type="primary" native-type="submit" :loading="saving">{{ editingId ? '保存修改' : '创建任务' }}</el-button></div>
       </form>
     </el-dialog>

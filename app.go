@@ -27,7 +27,6 @@ type App struct {
 
 	// API 层（供前端调用）
 	folderAPI       *api.FolderAPI
-	fileAPI         *api.FileAPI
 	taskAPI         *api.TaskAPI
 	configAPI       *api.ConfigAPI
 	taskControlAPI  *api.TaskControlAPI
@@ -89,7 +88,6 @@ func (a *App) startup(ctx context.Context) {
 	// 初始化 API 层并先加载适配器配置，再启动 durable worker，避免启动窗口
 	// 内已有队列任务在未配置远端客户端时被误判为失败。
 	a.folderAPI = api.NewFolderAPI(application)
-	a.fileAPI = api.NewFileAPI(application)
 	a.taskAPI = api.NewTaskAPI(application)
 	a.configAPI = api.NewConfigAPI(application)
 	a.taskControlAPI = api.NewTaskControlAPI(application)
@@ -106,8 +104,8 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// The tray is a convenience layer and must never prevent the sync engine
-	// from starting. Windows builds provide a real controller; other platforms
-	// use a no-op implementation.
+	// from starting. Windows and macOS builds provide native controllers;
+	// unsupported platforms use a no-op implementation.
 	a.tray = newTrayController(a.ctx)
 	if err := a.tray.Start(func() {
 		runtime.WindowShow(a.ctx)
@@ -121,19 +119,21 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // beforeClose is called by Wails before the native window is closed.
-// Windows asks how to close until the user remembers a choice. macOS does not
-// expose a tray/background mode for this app: closing the window exits the
-// process so no extra menu-bar/tray icon remains.
+// Windows asks how to close until the user remembers a choice. On macOS the
+// close button always hides the main window; the menu-bar Exit action is the
+// explicit way to stop the background sync engine.
 func (a *App) beforeClose(ctx context.Context) bool {
 	if a.exitRequested.Load() {
 		return false
 	}
 
 	if goRuntime.GOOS == "darwin" {
-		// macOS has no background/tray mode for this app. Returning false lets
-		// Wails complete the native close and terminate the process normally.
-		a.exitRequested.Store(true)
-		return false
+		if a.tray == nil {
+			a.exitRequested.Store(true)
+			return false
+		}
+		runtime.WindowHide(ctx)
+		return true
 	}
 
 	if goRuntime.GOOS != "windows" || a.application == nil {
@@ -209,7 +209,7 @@ func (a *App) requireReady() error {
 	if a.startupErr != nil {
 		return a.startupErr
 	}
-	if a.application == nil || a.folderAPI == nil || a.fileAPI == nil || a.taskAPI == nil || a.configAPI == nil || a.taskControlAPI == nil {
+	if a.application == nil || a.folderAPI == nil || a.taskAPI == nil || a.configAPI == nil || a.taskControlAPI == nil {
 		return errors.New("application is not ready")
 	}
 	return nil
@@ -302,43 +302,6 @@ func (a *App) PreviewMatch(req api.PreviewMatchRequest) (*api.PreviewMatchResult
 		return nil, err
 	}
 	return a.folderAPI.PreviewMatch(req)
-}
-
-// ==================== 文件管理 API ====================
-
-func (a *App) ListFiles(folderID string) ([]*api.FileDTO, error) {
-	if err := a.requireReady(); err != nil {
-		return nil, err
-	}
-	return a.fileAPI.ListFiles(folderID)
-}
-
-func (a *App) ListPendingFiles(folderID string) ([]*api.FileDTO, error) {
-	if err := a.requireReady(); err != nil {
-		return nil, err
-	}
-	return a.fileAPI.ListPendingFiles(folderID)
-}
-
-func (a *App) ListFilesByStatus(folderID string, status string) ([]*api.FileDTO, error) {
-	if err := a.requireReady(); err != nil {
-		return nil, err
-	}
-	return a.fileAPI.ListFilesByStatus(folderID, status)
-}
-
-func (a *App) GetFileStats(folderID string) (*api.FileStatsDTO, error) {
-	if err := a.requireReady(); err != nil {
-		return nil, err
-	}
-	return a.fileAPI.GetFileStats(folderID)
-}
-
-func (a *App) DeleteFile(fileID string) error {
-	if err := a.requireReady(); err != nil {
-		return err
-	}
-	return a.fileAPI.DeleteFile(fileID)
 }
 
 // ==================== 任务管理 API ====================

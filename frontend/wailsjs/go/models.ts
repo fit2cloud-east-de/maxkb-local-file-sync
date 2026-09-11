@@ -88,60 +88,6 @@ export namespace api {
 	        this.provider = source["provider"];
 	    }
 	}
-	export class FileDTO {
-	    fileId: string;
-	    folderId: string;
-	    relativePath: string;
-	    fileStatus: string;
-	    observedMd5: string;
-	    lastSuccessMd5: string;
-	    lastSuccessUsedMinerU: boolean;
-	    remoteDocId: string;
-	    lastSyncedAt?: string;
-	    lastCheckedAt?: string;
-	    createdAt: string;
-	    updatedAt: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new FileDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.fileId = source["fileId"];
-	        this.folderId = source["folderId"];
-	        this.relativePath = source["relativePath"];
-	        this.fileStatus = source["fileStatus"];
-	        this.observedMd5 = source["observedMd5"];
-	        this.lastSuccessMd5 = source["lastSuccessMd5"];
-	        this.lastSuccessUsedMinerU = source["lastSuccessUsedMinerU"];
-	        this.remoteDocId = source["remoteDocId"];
-	        this.lastSyncedAt = source["lastSyncedAt"];
-	        this.lastCheckedAt = source["lastCheckedAt"];
-	        this.createdAt = source["createdAt"];
-	        this.updatedAt = source["updatedAt"];
-	    }
-	}
-	export class FileStatsDTO {
-	    total: number;
-	    synced: number;
-	    pending: number;
-	    stale: number;
-	    needsDelete: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new FileStatsDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.total = source["total"];
-	        this.synced = source["synced"];
-	        this.pending = source["pending"];
-	        this.stale = source["stale"];
-	        this.needsDelete = source["needsDelete"];
-	    }
-	}
 	export class FolderDTO {
 	    folderId: string;
 	    name: string;

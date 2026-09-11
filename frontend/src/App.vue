@@ -37,7 +37,7 @@ let isUnmounted = false
 let stopCloseRequestListener: (() => void) | null = null
 
 const currentPage = computed(() => {
-  if (route.path.startsWith('/folders')) return { eyebrow: '工作区', title: route.path.includes('/files') ? '文件状态' : '同步任务' }
+  if (route.path.startsWith('/folders')) return { eyebrow: '工作区', title: '同步任务' }
   if (route.path === '/tasks') return { eyebrow: '工作区', title: '执行队列' }
   if (route.path === '/reconcile') return { eyebrow: '工作区', title: '异常处理' }
   if (route.path === '/settings') return { eyebrow: '管理', title: '系统设置' }
@@ -425,7 +425,7 @@ async function refreshAll() {
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark"><FolderSync :size="20" stroke-width="2.2" /></div>
-        <div class="brand-copy"><strong>MaxKB Sync</strong><span>本地文件同步客户端</span></div>
+        <div class="brand-copy"><strong>MaxKB Sync</strong></div>
       </div>
 
       <nav class="nav" aria-label="主导航">
@@ -448,7 +448,7 @@ async function refreshAll() {
       <div class="sidebar-bottom">
         <div class="connection-card">
           <span class="connection-indicator" :class="{ active: isBusy }"></span>
-          <div><strong>{{ isBusy ? '正在同步' : '执行器空闲' }}</strong><span>{{ isBusy ? '全局串行队列运行中' : '等待新的同步批次' }}</span></div>
+          <div><strong>{{ isBusy ? '正在同步' : '执行器空闲' }}</strong></div>
         </div>
         <div class="sidebar-meta">MaxKB Local Sync <span>v0.1</span></div>
       </div>

@@ -34,10 +34,6 @@ export function CreateTask(arg1, arg2) {
   return window['go']['main']['App']['CreateTask'](arg1, arg2);
 }
 
-export function DeleteFile(arg1) {
-  return window['go']['main']['App']['DeleteFile'](arg1);
-}
-
 export function DeleteFolder(arg1) {
   return window['go']['main']['App']['DeleteFolder'](arg1);
 }
@@ -60,10 +56,6 @@ export function GetAppVersion() {
 
 export function GetDataDirectory() {
   return window['go']['main']['App']['GetDataDirectory']();
-}
-
-export function GetFileStats(arg1) {
-  return window['go']['main']['App']['GetFileStats'](arg1);
 }
 
 export function GetFolder(arg1) {
@@ -106,14 +98,6 @@ export function ListEmbeddingModels(arg1) {
   return window['go']['main']['App']['ListEmbeddingModels'](arg1);
 }
 
-export function ListFiles(arg1) {
-  return window['go']['main']['App']['ListFiles'](arg1);
-}
-
-export function ListFilesByStatus(arg1, arg2) {
-  return window['go']['main']['App']['ListFilesByStatus'](arg1, arg2);
-}
-
 export function ListFolders() {
   return window['go']['main']['App']['ListFolders']();
 }
@@ -124,10 +108,6 @@ export function ListKnowledgeBases(arg1) {
 
 export function ListKnowledgeFolders(arg1) {
   return window['go']['main']['App']['ListKnowledgeFolders'](arg1);
-}
-
-export function ListPendingFiles(arg1) {
-  return window['go']['main']['App']['ListPendingFiles'](arg1);
 }
 
 export function ListReconcileRequired() {

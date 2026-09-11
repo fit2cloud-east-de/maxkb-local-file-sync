@@ -172,3 +172,99 @@ func TestMinerUArtifactCleanupManualNeverPolicyRemovesCompletedBatches(t *testin
 		t.Fatalf("paused batch should be protected: %v", err)
 	}
 }
+
+func TestDeleteFolderArtifactsKeepsSameNameTaskIsolated(t *testing.T) {
+	database := newArtifactCleanupTestDB(t)
+	settingsRepo := repository.NewSystemSettingsRepository(database)
+	root := t.TempDir()
+	insertArtifactCleanupFolder(t, database, "folder-a", "Shared Name")
+	insertArtifactCleanupFolder(t, database, "folder-b", "Shared Name")
+	now := time.Now().UTC()
+	insertArtifactCleanupRun(t, database, "run-a", "folder-a", "SUCCESS", now)
+	insertArtifactCleanupRun(t, database, "run-b", "folder-b", "SUCCESS", now)
+	batchA := writeArtifactBatch(t, root, "Shared Name", "run-a", now)
+	batchB := writeArtifactBatch(t, root, "Shared Name", "run-b", now)
+	configureArtifactCleanup(t, settingsRepo, root, repository.MinerUCleanupPolicyNever, 0, 0, "day")
+
+	service := NewMinerUArtifactCleanupService(database, settingsRepo, nil)
+	if err := service.DeleteFolderArtifacts(context.Background(), "folder-a"); err != nil {
+		t.Fatalf("DeleteFolderArtifacts() error = %v", err)
+	}
+	if _, err := os.Stat(batchA); !os.IsNotExist(err) {
+		t.Fatalf("deleted task batch still exists, stat error = %v", err)
+	}
+	if _, err := os.Stat(batchB); err != nil {
+		t.Fatalf("same-name task batch was removed: %v", err)
+	}
+	var folderID string
+	if err := database.QueryRow(`SELECT folder_id FROM sync_folders WHERE folder_id = ?`, "folder-a").Scan(&folderID); err != nil || folderID != "folder-a" {
+		t.Fatalf("artifact cleanup changed the sync folder record: id=%q error=%v", folderID, err)
+	}
+}
+
+func TestDeleteFolderArtifactsFindsBatchUnderPreviousTaskName(t *testing.T) {
+	database := newArtifactCleanupTestDB(t)
+	settingsRepo := repository.NewSystemSettingsRepository(database)
+	root := t.TempDir()
+	insertArtifactCleanupFolder(t, database, "folder-a", "Current Name")
+	now := time.Now().UTC()
+	insertArtifactCleanupRun(t, database, "run-a", "folder-a", "SUCCESS", now)
+	batch := writeArtifactBatch(t, root, "Previous Name", "run-a", now)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(batch), ".DS_Store"), []byte("finder metadata"), 0o600); err != nil {
+		t.Fatalf("write task directory metadata: %v", err)
+	}
+	configureArtifactCleanup(t, settingsRepo, root, repository.MinerUCleanupPolicyNever, 0, 0, "day")
+
+	service := NewMinerUArtifactCleanupService(database, settingsRepo, nil)
+	if err := service.DeleteFolderArtifacts(context.Background(), "folder-a"); err != nil {
+		t.Fatalf("DeleteFolderArtifacts() error = %v", err)
+	}
+	if _, err := os.Stat(batch); !os.IsNotExist(err) {
+		t.Fatalf("batch under the previous task name still exists, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(batch)); !os.IsNotExist(err) {
+		t.Fatalf("task artifact directory containing only system metadata still exists, stat error = %v", err)
+	}
+}
+
+func TestDeleteFolderArtifactsKeepsTaskDirectoryWithUnknownFile(t *testing.T) {
+	database := newArtifactCleanupTestDB(t)
+	settingsRepo := repository.NewSystemSettingsRepository(database)
+	root := t.TempDir()
+	insertArtifactCleanupFolder(t, database, "folder-a", "Task A")
+	now := time.Now().UTC()
+	insertArtifactCleanupRun(t, database, "run-a", "folder-a", "SUCCESS", now)
+	batch := writeArtifactBatch(t, root, "Task A", "run-a", now)
+	taskDirectory := filepath.Dir(batch)
+	retainedFile := filepath.Join(taskDirectory, "keep.txt")
+	if err := os.WriteFile(retainedFile, []byte("not managed by cleanup"), 0o600); err != nil {
+		t.Fatalf("write retained file: %v", err)
+	}
+	configureArtifactCleanup(t, settingsRepo, root, repository.MinerUCleanupPolicyNever, 0, 0, "day")
+
+	service := NewMinerUArtifactCleanupService(database, settingsRepo, nil)
+	if err := service.DeleteFolderArtifacts(context.Background(), "folder-a"); err != nil {
+		t.Fatalf("DeleteFolderArtifacts() error = %v", err)
+	}
+	if _, err := os.Stat(batch); !os.IsNotExist(err) {
+		t.Fatalf("task batch still exists, stat error = %v", err)
+	}
+	if _, err := os.Stat(retainedFile); err != nil {
+		t.Fatalf("unknown task directory file was removed: %v", err)
+	}
+}
+
+func TestDeleteFolderArtifactsAllowsMissingSaveDirectory(t *testing.T) {
+	database := newArtifactCleanupTestDB(t)
+	settingsRepo := repository.NewSystemSettingsRepository(database)
+	root := filepath.Join(t.TempDir(), "not-created")
+	configureArtifactCleanup(t, settingsRepo, root, repository.MinerUCleanupPolicyNever, 0, 0, "day")
+
+	service := NewMinerUArtifactCleanupService(database, settingsRepo, nil)
+	if err := service.DeleteFolderArtifacts(context.Background(), "folder-a"); err != nil {
+		t.Fatalf("DeleteFolderArtifacts() missing directory error = %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("cleanup unexpectedly created the missing save directory: %v", err)
+	}
+}

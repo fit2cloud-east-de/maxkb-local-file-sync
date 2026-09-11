@@ -417,18 +417,18 @@ function onMinerUApiKeyBlur() {
 
 <template>
   <div class="view-page settings-page">
-    <header class="page-header"><div><h1>系统设置</h1><p class="muted settings-description">凭据仅通过系统凭据库管理，连接测试会真实调用对应服务。<ElTooltip placement="bottom-start" effect="light" :show-after="150"><template #content><div class="credentials-tooltip"><strong>凭据安全</strong><p>MaxKB API Key、在线 MinerU Token 和内网网关 Token 不写入 SQLite、日志或导出文件。系统凭据库不可用时不会降级为明文保存。</p></div></template><button type="button" class="settings-help" aria-label="查看凭据安全说明"><CircleHelp :size="15" /></button></ElTooltip></p></div></header>
+    <header class="page-header"><div class="settings-title-line"><h1>系统设置</h1><ElTooltip placement="bottom-start" effect="light" :show-after="150"><template #content><div class="credentials-tooltip"><strong>凭据安全</strong><p>MaxKB API Key、在线 MinerU Token 和内网网关 Token 不写入 SQLite、日志或导出文件。系统凭据库不可用时不会降级为明文保存。</p></div></template><button type="button" class="settings-help" aria-label="查看凭据安全说明"><CircleHelp :size="15" /></button></ElTooltip></div></header>
 
     <el-tabs v-model="activeTab" class="settings-tabs">
       <el-tab-pane label="MaxKB 配置" name="maxkb">
         <section class="panel settings-panel settings-tab-panel">
-          <div class="settings-panel-header"><div><h2>MaxKB 服务</h2><p>同步目标、工作空间和知识库都从这里连接。</p></div><div class="settings-icon"><Server :size="17" /></div></div>
+          <div class="settings-panel-header"><div><h2>MaxKB 服务</h2></div><div class="settings-icon"><Server :size="17" /></div></div>
           <el-form class="settings-form" label-position="top">
             <el-form-item label="MaxKB Base URL"><el-input v-model="maxkb.baseUrl" placeholder="https://maxkb.example.com" clearable /></el-form-item>
             <el-form-item label="User Key / API Key"><el-input v-model="maxkb.apiKey" type="password" placeholder="已保存凭据不会完整显示" @focus="onMaxKBApiKeyFocus" @blur="onMaxKBApiKeyBlur" /></el-form-item>
             <el-form-item>
               <template #label>
-                <span class="field-label-with-help">MaxKB 请求超时时间（秒）<ElTooltip placement="top-start" effect="light"><template #content>用于文件解析和智能分段。</template><Info :size="15" aria-hidden="true" /></ElTooltip></span>
+                <span class="field-label-with-help">MaxKB 请求超时时间（秒）<ElTooltip placement="top-start" effect="light"><template #content>用于文件解析和智能分段。</template><button type="button" class="settings-help" aria-label="查看超时时间说明"><CircleHelp :size="15" /></button></ElTooltip></span>
               </template>
               <div class="timeout-field"><el-input-number v-model="maxkb.timeoutSeconds" :min="30" :max="600" :step="10" controls-position="right" /></div>
             </el-form-item>
@@ -443,7 +443,6 @@ function onMinerUApiKeyBlur() {
             <div class="mineru-global-control-copy">
               <div>
                 <h2>MinerU 转换服务</h2>
-                <p>开启后，可为不支持直接上传的文件使用 MinerU 转换后再同步到 MaxKB。</p>
               </div>
             </div>
             <div class="mineru-global-control-actions">
@@ -456,7 +455,6 @@ function onMinerUApiKeyBlur() {
               <div class="settings-subsection-header">
                 <div>
                   <h3>服务连接</h3>
-                  <p>配置 MinerU 的服务模式、地址和访问凭据。</p>
                 </div>
                 <Server :size="17" />
               </div>
@@ -492,7 +490,6 @@ function onMinerUApiKeyBlur() {
               <div class="settings-subsection-header">
                 <div>
                   <h3>产物保存与清理</h3>
-                  <p>MinerU 返回的原始 ZIP 默认保存，不解压，完成后直接提交 MaxKB。</p>
                 </div>
                 <FolderOpen :size="17" />
               </div>
@@ -504,7 +501,6 @@ function onMinerUApiKeyBlur() {
                       <el-input v-model="mineruArtifact.resultSaveDir" placeholder="选择用于保存 MinerU 结果 ZIP 的目录" clearable :disabled="mineruConfigDisabled" />
                       <el-button plain type="primary" :loading="saving === 'select-mineru-artifact-dir'" :disabled="mineruConfigDisabled" @click="selectMinerUArtifactDirectory"><FolderOpen :size="15" /> 选择目录</el-button>
                     </div>
-                    <span class="form-hint">MinerU 开启时必填；立即清理策略不会在此目录保留 ZIP。</span>
                   </div>
                 </div>
                 <div class="settings-field-row settings-field-row-top">
@@ -517,9 +513,7 @@ function onMinerUApiKeyBlur() {
                         <el-radio value="after_duration">按时间清理</el-radio>
                         <el-radio value="never">不自动清理</el-radio>
                       </el-radio-group>
-                      <span class="cleanup-policy-hint">选择产物的清理方式，节省存储空间。</span>
                     </div>
-                    <span class="form-hint">立即清理：本次同步完成后删除 ZIP；按批次/按时间：按规则自动删除；不自动清理：仅手动清理。</span>
                   </div>
                 </div>
                 <div v-if="artifactCleanupPolicy === 'after_duration' || artifactCleanupPolicy === 'keep_batches'" class="cleanup-detail-row">
@@ -573,15 +567,15 @@ function onMinerUApiKeyBlur() {
 </template>
 
 <script lang="ts">
-import { CircleHelp, FileCog, FolderOpen, Info, PlugZap, Save, Server, Trash2 } from 'lucide-vue-next'
-export default { components: { CircleHelp, FileCog, FolderOpen, Info, PlugZap, Save, Server, Trash2 } }
+import { CircleHelp, FileCog, FolderOpen, PlugZap, Save, Server, Trash2 } from 'lucide-vue-next'
+export default { components: { CircleHelp, FileCog, FolderOpen, PlugZap, Save, Server, Trash2 } }
 </script>
 
 <style scoped>
-/* Settings are grouped by service while security details stay available from the page description. */
+/* Settings are grouped by service while security details stay available beside the page title. */
 .settings-page { padding-bottom: 48px; }
-.settings-description { display: flex; align-items: center; gap: 5px; }
-.settings-description :deep(.el-tooltip__trigger) { display: inline-flex; align-items: center; }
+.settings-title-line { display: flex; align-items: center; gap: 6px; }
+.settings-title-line :deep(.el-tooltip__trigger) { display: inline-flex; align-items: center; }
 .settings-help { display: inline-grid; width: 18px; height: 18px; padding: 0; place-items: center; color: var(--muted); background: transparent; border: 0; border-radius: 50%; transition: color .16s, background .16s; }
 .settings-help:hover, .settings-help:focus-visible { color: var(--primary); background: #efeeff; outline: none; }
 .credentials-tooltip { max-width: 330px; }
@@ -595,6 +589,7 @@ export default { components: { CircleHelp, FileCog, FolderOpen, Info, PlugZap, S
 .settings-tabs :deep(.el-tabs__item.is-active) { color: var(--primary); font-weight: 650; }
 .settings-tabs :deep(.el-tabs__active-bar) { height: 2px; border-radius: 2px; }
 .settings-tab-panel { min-height: 300px; }
+.settings-page .settings-panel-header h2 { margin-bottom: 0; }
 
 .mineru-settings-panel {
   padding: 24px 26px 26px;
@@ -614,14 +609,12 @@ export default { components: { CircleHelp, FileCog, FolderOpen, Info, PlugZap, S
 }
 .mineru-global-control-copy { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .mineru-global-control-copy h2 { margin: 0 0 6px; color: var(--text-primary); font-size: 22px; line-height: 1.25; letter-spacing: -.02em; }
-.mineru-global-control-copy p { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
 .mineru-global-control-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 0 0 auto; }
 .mineru-global-control-actions :deep(.el-switch) { --el-switch-on-color: var(--primary); }
 .settings-subsection { padding-top: 21px; }
 .settings-subsection + .settings-subsection { margin-top: 21px; padding-top: 21px; border-top: 1px solid var(--border); }
 .settings-subsection-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; color: var(--primary); }
-.settings-subsection-header h3 { margin: 0 0 5px; color: var(--text-primary); font-size: 16px; line-height: 1.35; }
-.settings-subsection-header p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.settings-subsection-header h3 { margin: 0; color: var(--text-primary); font-size: 16px; line-height: 1.35; }
 .settings-subsection-header > svg { flex: 0 0 auto; margin-top: 3px; color: var(--primary); }
 .settings-subsection .settings-form { padding-top: 19px; }
 .mineru-form { gap: 16px; }
@@ -650,7 +643,6 @@ export default { components: { CircleHelp, FileCog, FolderOpen, Info, PlugZap, S
 .cleanup-policy-group { display: flex; align-items: center; gap: 22px; flex: 0 0 auto; flex-wrap: wrap; }
 .cleanup-policy-group :deep(.el-radio) { margin-right: 0; color: var(--text-secondary); }
 .cleanup-policy-group :deep(.el-radio__label) { padding-left: 7px; font-size: 13px; }
-.cleanup-policy-hint { min-width: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .cleanup-detail-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; min-width: 0; }
 .cleanup-detail-field { grid-template-columns: 112px minmax(0, 1fr); gap: 14px; min-width: 0; }
 .cleanup-detail-field .settings-field-label { white-space: nowrap; }

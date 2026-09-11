@@ -14,8 +14,7 @@ import (
 // Sentinel errors used by the API layer to turn database details into
 // actionable user-facing messages without exposing SQLite constraint text.
 var (
-	ErrSyncFolderNotFound     = errors.New("sync folder not found")
-	ErrSyncFolderPathConflict = errors.New("sync folder local path already exists")
+	ErrSyncFolderNotFound = errors.New("sync folder not found")
 )
 
 // SyncFolder 同步文件夹实体
@@ -97,7 +96,6 @@ type SyncFolderRepository interface {
 	Update(ctx context.Context, folder *SyncFolder) error
 	Delete(ctx context.Context, folderID string) error
 	GetByID(ctx context.Context, folderID string) (*SyncFolder, error)
-	GetByLocalPath(ctx context.Context, localPath string) (*SyncFolder, error)
 	List(ctx context.Context) ([]*SyncFolder, error)
 	ListByKBId(ctx context.Context, kbID string) ([]*SyncFolder, error)
 	ListCronEnabled(ctx context.Context) ([]*SyncFolder, error)
@@ -138,9 +136,6 @@ func (r *syncFolderRepo) Create(ctx context.Context, folder *SyncFolder) error {
 		folder.IncludePatterns, folder.ExcludePatterns, folder.MinerUFileExtensions,
 		folder.CreatedAt.Format(time.RFC3339Nano), folder.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
-		if isLocalPathUniqueConstraint(err) {
-			return fmt.Errorf("%w: %s", ErrSyncFolderPathConflict, folder.LocalPath)
-		}
 		return fmt.Errorf("failed to create sync folder: %w", err)
 	}
 	return nil
@@ -174,9 +169,6 @@ func (r *syncFolderRepo) Update(ctx context.Context, folder *SyncFolder) error {
 		folder.IncludePatterns, folder.ExcludePatterns, folder.MinerUFileExtensions,
 		time.Now().UTC().Format(time.RFC3339Nano), folder.FolderID)
 	if err != nil {
-		if isLocalPathUniqueConstraint(err) {
-			return fmt.Errorf("%w: %s", ErrSyncFolderPathConflict, folder.LocalPath)
-		}
 		return fmt.Errorf("failed to update sync folder: %w", err)
 	}
 	rows, err := result.RowsAffected()
@@ -214,28 +206,6 @@ func (r *syncFolderRepo) GetByID(ctx context.Context, folderID string) (*SyncFol
 		return nil, fmt.Errorf("failed to query sync folder: %w", err)
 	}
 	return folder, nil
-}
-
-func (r *syncFolderRepo) GetByLocalPath(ctx context.Context, localPath string) (*SyncFolder, error) {
-	folder := &SyncFolder{}
-	normalized := normalizeLocalPath(localPath)
-	err := scanFolderRow(r.db.QueryRow(`SELECT `+syncFolderSelectColumns+` FROM sync_folders WHERE normalized_local_path = ? OR local_path = ?`, normalized, localPath), folder)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("%w for path: %s", ErrSyncFolderNotFound, localPath)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query sync folder: %w", err)
-	}
-	return folder, nil
-}
-
-func isLocalPathUniqueConstraint(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := err.Error()
-	return strings.Contains(message, "UNIQUE constraint failed: sync_folders.normalized_local_path") ||
-		strings.Contains(message, "UNIQUE constraint failed: sync_folders.local_path")
 }
 
 func (r *syncFolderRepo) List(ctx context.Context) ([]*SyncFolder, error) {

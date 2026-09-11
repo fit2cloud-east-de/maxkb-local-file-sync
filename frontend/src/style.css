@@ -59,7 +59,6 @@ button { cursor: pointer; }
 .brand-mark { width: 36px; height: 36px; display: grid; place-items: center; color: #fff; background: var(--primary); border-radius: 10px; box-shadow: 0 7px 17px rgba(90,85,250,.22); }
 .brand-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .brand-copy strong { font-size: 15px; letter-spacing: -.01em; }
-.brand-copy span { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .nav { display: flex; flex-direction: column; gap: 4px; }
 .nav-section-label { padding: 0 12px 7px; color: #b1b5c2; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .nav-section-spaced { margin-top: 21px; }
@@ -75,7 +74,6 @@ button { cursor: pointer; }
 .connection-card { display: flex; gap: 10px; padding: 12px 11px; background: #fafaff; border: 1px solid #ededff; border-radius: 10px; }
 .connection-card > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .connection-card strong { font-size: 12px; }
-.connection-card span:not(.connection-indicator) { color: var(--muted); font-size: 10px; }
 .connection-indicator { width: 8px; height: 8px; margin-top: 4px; flex: 0 0 8px; border-radius: 50%; background: #c5c9d4; }
 .connection-indicator.active { background: var(--success); box-shadow: 0 0 0 4px #dcfce7; }
 .sidebar-meta { display: flex; justify-content: space-between; padding: 13px 3px 0; color: #b0b4c0; font-size: 10px; }
@@ -207,20 +205,6 @@ button { cursor: pointer; }
 .modal-error { margin-bottom: 12px; }
 .dialog-footer-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-.file-table-wrap { overflow: auto; background: #fff; border: 1px solid var(--border); border-radius: 11px; }
-.file-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.file-table th, .file-table td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--border); }
-.file-table th { color: var(--text-secondary); background: #fafbfc; font-size: 10px; font-weight: 650; }
-.file-table tr:last-child td { border-bottom: 0; }
-.file-table tr:hover td { background: #fbfbff; }
-.file-path { max-width: 460px; color: var(--text-primary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
-.file-date { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.stats-strip { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 17px; color: var(--text-secondary); font-size: 12px; }
-.stats-strip strong { color: var(--text-primary); }
-.tabs { display: flex; gap: 3px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
-.tab-btn { padding: 9px 12px; color: var(--text-secondary); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 11px; }
-.tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
-
 .reconcile-list { display: flex; flex-direction: column; gap: 13px; }
 .reconcile-card { padding: 18px; }
 .reason { padding: 9px 11px; color: #92400e; background: #fff8ed; border-radius: 7px; font-size: 12px; }
@@ -283,7 +267,6 @@ button { cursor: pointer; }
 
 /* 执行队列任务详情 */
 .tasks-view .summary-card { min-height: 84px; }
-.tasks-view .summary-card small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
 .tasks-view .run-card { cursor: default; transition: border-color .16s, box-shadow .16s, transform .16s; }
 .tasks-view .run-card:hover { border-color: #cfcdfd; box-shadow: 0 8px 24px rgba(90,85,250,.08); transform: translateY(-1px); }
 .detail-hero { display: flex; flex-direction: column; gap: 17px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }

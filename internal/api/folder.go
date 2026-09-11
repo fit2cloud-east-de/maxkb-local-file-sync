@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"maxkb-local-file-sync/internal/app"
@@ -14,7 +15,8 @@ import (
 
 // FolderAPI 文件夹管理 API
 type FolderAPI struct {
-	app *app.Application
+	app        *app.Application
+	mutationMu sync.Mutex
 }
 
 // NewFolderAPI 创建文件夹 API
@@ -111,34 +113,30 @@ type PreviewMatchResult struct {
 	RegularFiles     []string          `json:"regularFiles"`
 }
 
-func validateFolderPathAvailable(ctx context.Context, repo repository.SyncFolderRepository, normalizedPath, currentFolderID string) error {
-	existing, err := repo.GetByLocalPath(ctx, normalizedPath)
-	if err == nil {
-		if existing != nil && existing.FolderID != currentFolderID {
-			name := strings.TrimSpace(existing.Name)
-			if name == "" {
-				name = "未命名任务"
-			}
-			return fmt.Errorf("本地文件夹已绑定同步任务“%s”，不能重复创建。请编辑已有任务或选择其他文件夹", name)
-		}
-		return nil
+func normalizedFolderName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func validateFolderNameAvailable(ctx context.Context, repo repository.SyncFolderRepository, name, excludedFolderID string) error {
+	normalizedName := normalizedFolderName(name)
+	folders, err := repo.List(ctx)
+	if err != nil {
+		return fmt.Errorf("读取同步任务名称失败: %w", err)
 	}
-	if !errors.Is(err, repository.ErrSyncFolderNotFound) {
-		return err
+	for _, folder := range folders {
+		if folder.FolderID != excludedFolderID && normalizedFolderName(folder.Name) == normalizedName {
+			return fmt.Errorf("同步任务名称“%s”已存在，请使用其他名称", strings.TrimSpace(name))
+		}
 	}
 	return nil
 }
 
-func userFacingFolderPathError(err error) error {
-	if errors.Is(err, repository.ErrSyncFolderPathConflict) {
-		return fmt.Errorf("本地文件夹已绑定其他同步任务，不能重复创建。请编辑已有任务或选择其他文件夹")
-	}
-	return err
-}
-
-// validateFolderTarget 校验同步任务必填的本地目录、目标工作空间和知识库。
+// validateFolderTarget 校验同步任务必填的名称、本地目录、目标工作空间和知识库。
 // 这项校验同时放在后端，避免绕过前端直接调用 Wails 接口创建不完整任务。
 func validateFolderTarget(req CreateFolderRequest) error {
+	if strings.TrimSpace(req.Name) == "" {
+		return errors.New("请输入任务名称")
+	}
 	if strings.TrimSpace(req.LocalPath) == "" {
 		return errors.New("请选择本地文件夹")
 	}
@@ -153,9 +151,14 @@ func validateFolderTarget(req CreateFolderRequest) error {
 
 // CreateFolder 创建文件夹
 func (api *FolderAPI) CreateFolder(req CreateFolderRequest) (*FolderDTO, error) {
+	api.mutationMu.Lock()
+	defer api.mutationMu.Unlock()
 	ctx := context.Background()
 
 	if err := validateFolderTarget(req); err != nil {
+		return nil, err
+	}
+	if err := validateFolderNameAvailable(ctx, api.app.FolderRepo(), req.Name, ""); err != nil {
 		return nil, err
 	}
 
@@ -163,10 +166,6 @@ func (api *FolderAPI) CreateFolder(req CreateFolderRequest) (*FolderDTO, error) 
 	normalizedPath, err := file.NormalizePath(req.LocalPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to normalize path: %w", err)
-	}
-
-	if err := validateFolderPathAvailable(ctx, api.app.FolderRepo(), normalizedPath, ""); err != nil {
-		return nil, err
 	}
 
 	maxkbSettings, settingsErr := api.app.MaxKBSettings()
@@ -179,7 +178,7 @@ func (api *FolderAPI) CreateFolder(req CreateFolderRequest) (*FolderDTO, error) 
 	}
 	folder := &repository.SyncFolder{
 		FolderID:               generateFolderID(),
-		Name:                   req.Name,
+		Name:                   strings.TrimSpace(req.Name),
 		LocalPath:              normalizedPath,
 		KBId:                   req.KBId,
 		WorkspaceID:            req.WorkspaceId,
@@ -204,7 +203,7 @@ func (api *FolderAPI) CreateFolder(req CreateFolderRequest) (*FolderDTO, error) 
 	}
 
 	if err := api.app.FolderRepo().Create(ctx, folder); err != nil {
-		return nil, userFacingFolderPathError(err)
+		return nil, err
 	}
 
 	// 添加 Cron 调度
@@ -219,6 +218,8 @@ func (api *FolderAPI) CreateFolder(req CreateFolderRequest) (*FolderDTO, error) 
 
 // UpdateFolder 更新文件夹
 func (api *FolderAPI) UpdateFolder(folderID string, req CreateFolderRequest) (*FolderDTO, error) {
+	api.mutationMu.Lock()
+	defer api.mutationMu.Unlock()
 	ctx := context.Background()
 
 	if err := validateFolderTarget(req); err != nil {
@@ -229,6 +230,11 @@ func (api *FolderAPI) UpdateFolder(folderID string, req CreateFolderRequest) (*F
 	if err != nil {
 		return nil, err
 	}
+	if normalizedFolderName(folder.Name) != normalizedFolderName(req.Name) {
+		if err := validateFolderNameAvailable(ctx, api.app.FolderRepo(), req.Name, folderID); err != nil {
+			return nil, err
+		}
+	}
 
 	// 规范化路径
 	normalizedPath, err := file.NormalizePath(req.LocalPath)
@@ -236,12 +242,8 @@ func (api *FolderAPI) UpdateFolder(folderID string, req CreateFolderRequest) (*F
 		return nil, fmt.Errorf("failed to normalize path: %w", err)
 	}
 
-	if err := validateFolderPathAvailable(ctx, api.app.FolderRepo(), normalizedPath, folderID); err != nil {
-		return nil, err
-	}
-
 	// 更新字段
-	folder.Name = req.Name
+	folder.Name = strings.TrimSpace(req.Name)
 	folder.LocalPath = normalizedPath
 	folder.KBId = req.KBId
 	folder.WorkspaceID = req.WorkspaceId
@@ -266,7 +268,7 @@ func (api *FolderAPI) UpdateFolder(folderID string, req CreateFolderRequest) (*F
 	folder.MinerUFileExtensions = req.MinerUFileExtensions
 
 	if err := api.app.FolderRepo().Update(ctx, folder); err != nil {
-		return nil, userFacingFolderPathError(err)
+		return nil, err
 	}
 
 	// 更新 Cron 调度
@@ -286,6 +288,14 @@ func (api *FolderAPI) UpdateFolder(folderID string, req CreateFolderRequest) (*F
 // DeleteFolder 删除文件夹
 func (api *FolderAPI) DeleteFolder(folderID string) error {
 	ctx := context.Background()
+	if _, err := api.app.FolderRepo().GetByID(ctx, folderID); err != nil {
+		return err
+	}
+	if cleanup := api.app.MinerUArtifactCleanupService(); cleanup != nil {
+		if err := cleanup.DeleteFolderArtifacts(ctx, folderID); err != nil {
+			return fmt.Errorf("清理该同步任务的 MinerU 中间产物失败: %w", err)
+		}
+	}
 
 	// 移除 Cron 调度
 	if err := api.app.CronService().RemoveSchedule(ctx, folderID); err != nil {

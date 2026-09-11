@@ -439,14 +439,14 @@ async function control(action: 'pause' | 'resume' | 'stop', taskId: string) {
 <template>
   <div class="view-page tasks-view">
     <header class="page-header">
-      <div><p class="eyebrow">运行中心</p><h1>执行队列</h1><p class="muted">以同步任务为单位查看每次执行批次，点击任务可查看成功、失败和具体处理结果。</p></div>
+      <div><h1>执行队列</h1></div>
     </header>
 
     <div class="queue-summary">
-      <div class="summary-card"><div class="summary-icon"><Clock3 :size="17" /></div><div><span>排队中</span><strong>{{ store.queueStats.queued }}</strong><small>等待执行</small></div></div>
-      <div class="summary-card"><div class="summary-icon"><Activity :size="17" /></div><div><span>当前运行</span><strong class="success-text">{{ store.queueStats.running }}</strong><small>全局串行处理中</small></div></div>
-      <div class="summary-card"><div class="summary-icon"><CircleAlert :size="17" /></div><div><span>已暂停</span><strong class="warning-text">{{ store.queueStats.paused }}</strong><small>等待手动继续</small></div></div>
-      <div class="summary-card"><div class="summary-icon"><XCircle :size="17" /></div><div><span>待处理</span><strong class="danger-text">{{ store.queueStats.reconcileRequired }}</strong><small>需要人工确认</small></div></div>
+      <div class="summary-card"><div class="summary-icon"><Clock3 :size="17" /></div><div><span>排队中</span><strong>{{ store.queueStats.queued }}</strong></div></div>
+      <div class="summary-card"><div class="summary-icon"><Activity :size="17" /></div><div><span>当前运行</span><strong class="success-text">{{ store.queueStats.running }}</strong></div></div>
+      <div class="summary-card"><div class="summary-icon"><CircleAlert :size="17" /></div><div><span>已暂停</span><strong class="warning-text">{{ store.queueStats.paused }}</strong></div></div>
+      <div class="summary-card"><div class="summary-icon"><XCircle :size="17" /></div><div><span>待处理</span><strong class="danger-text">{{ store.queueStats.reconcileRequired }}</strong></div></div>
     </div>
 
     <div class="filter-bar">
