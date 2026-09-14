@@ -1,8 +1,10 @@
 <p align="center">
-  <h1 align="center">MaxKB 本地文件同步工具</h1>
+  <img src="build/appicon.png" width="112" alt="MaxKB 本地文件同步工具图标">
 </p>
 
-<p align="center">将本地文件夹中的文件递归、增量地同步到指定的 MaxKB 知识库。</p>
+<h1 align="center">MaxKB 本地文件同步工具</h1>
+
+<p align="center">将本地文件夹持续、增量地同步到指定的 MaxKB 知识库。</p>
 
 <p align="center">
   <a href="https://github.com/fit2cloud-east-de/maxkb-local-file-sync/blob/main/LICENSE"><img src="https://img.shields.io/github/license/fit2cloud-east-de/maxkb-local-file-sync" alt="License"></a>
@@ -10,169 +12,162 @@
   <a href="https://github.com/fit2cloud-east-de/maxkb-local-file-sync"><img src="https://img.shields.io/github/stars/fit2cloud-east-de/maxkb-local-file-sync?style=flat-square" alt="GitHub Stars"></a>
 </p>
 
-## 项目简介
+## 项目介绍
 
-MaxKB 本地文件同步工具是一款运行在用户电脑上的跨平台桌面应用，面向需要将本地资料持续同步到 MaxKB 知识库的场景。
+MaxKB 本地文件同步工具是一款运行在 Windows 和 macOS 上的桌面应用。它递归扫描指定文件夹，将新增或变化的文件同步到 MaxKB，并在需要时调用 MinerU 完成文档转换。
 
-应用不依赖中心服务端：同步任务、执行队列、文件映射、批次日志和恢复检查点均保存在本机 SQLite 中。客户端只管理自己数据库中记录的远端文档，不会按文件名删除文档，也不会影响其他用户或其他客户端创建的内容。
+应用不依赖额外的中心服务。任务配置、执行队列、文件映射和恢复检查点保存在本机；API Key 和 Token 由操作系统凭据库管理。
 
-## 功能特性
+![同步任务页面](docs/images/sync-tasks.png)
 
-- **增量同步**：递归扫描本地文件夹，使用相对路径和流式 MD5 识别新增、修改、删除、未变化和可识别的重命名。
-- **灵活筛选**：支持 Include、Exclude 多条正则规则，统一使用相对根目录的 `/` 路径匹配，并提供文件匹配预览及排除原因。
-- **MaxKB 集成**：支持连接校验、工作空间选择、知识库目录选择、知识库选择、Embedding 模型选择、文档上传和文档状态查询。
-- **MinerU 集成**：支持关闭 MinerU、在线 MinerU 和内网 MinerU；通过 Adapter 隔离不同服务协议，并支持异步任务轮询、失败重试和结果 ZIP 下载。
-- **ZIP 产物处理**：MinerU 生成 ZIP 后，客户端仅保留 `full.md` 和 `images/`，重新压缩为同名 ZIP 后交由 MaxKB 处理；可按系统设置保存产物，并支持按批次或按时间清理。
-- **任务调度**：支持手动立即同步和标准 5 段 Cron 定时同步，时区跟随操作系统。
-- **可靠队列**：客户端内所有同步批次全局串行执行，单个任务内文件串行处理；队列和检查点持久化，支持异常退出恢复。
-- **批次控制**：支持暂停、继续、停止和取消排队。暂停或停止在当前文件到达安全检查点后生效，不回滚已经完成的远端操作。
-- **异常处理**：不确定的上传、批次创建或删除操作不会自动重试，必须由人工明确决策后处理；客户端保留必要的远端引用和本地状态用于后续处理。
-- **凭据保护**：MaxKB API Key、在线 MinerU Token 和内网网关 Token 通过 macOS Keychain 或 Windows Credential Manager 保存，不写入 SQLite 明文、日志或导出文件。
+## 核心能力
 
-## 支持的文件类型
+- **增量同步**：通过相对路径和流式 MD5 识别新增、修改、删除、未变化和可确认的重命名。
+- **灵活筛选**：支持 Include、Exclude 正则规则，并提供限制展示数量的文件匹配预览。
+- **MaxKB 集成**：支持工作区、知识库目录、知识库选择，以及文件上传、智能分段和文档创建。
+- **MinerU 转换**：支持在线 MinerU 和内网 MinerU，异步提交、状态轮询、ZIP 下载及结果整理。
+- **产物管理**：MinerU ZIP 仅保留 `full.md` 和 `images/` 后重新压缩，可立即清理、按批次清理、按时间清理或不自动清理。
+- **可靠执行**：同步批次持久化、全局串行执行，支持暂停、继续、停止、异常退出恢复和失败文件重试。
+- **人工确认**：无法确定远端是否已执行的上传、创建或删除操作进入“异常处理”，避免盲目重试造成重复文档或误删。
+- **后台运行**：Windows 支持最小化到系统托盘；macOS 关闭主窗口后保留顶部菜单栏入口。
 
-MaxKB 端支持直接上传的文件类型为：
+## 工作流程
 
-- TXT
-- Markdown
-- PDF
-- DOCX
-- HTML
-- XLS / XLSX
-- CSV
-- ZIP
+```mermaid
+flowchart LR
+    A[扫描本地文件夹] --> B[应用 Include / Exclude]
+    B --> C{是否需要 MinerU?}
+    C -- 否 --> D[直接上传 MaxKB]
+    C -- 是 --> E[MinerU 转换]
+    E --> F[整理 full.md 和 images]
+    F --> G[重新压缩 ZIP]
+    G --> D
+    D --> H[MaxKB 智能分段]
+    H --> I[创建知识库文档]
+    I --> J[记录文档 ID 和文件摘要]
+```
 
-其他文件类型可以在启用并正确配置 MinerU 后，先通过 MinerU 转换，再将转换结果 ZIP 上传到 MaxKB。具体支持范围以实际 MaxKB、在线 MinerU 和内网 MinerU 服务的版本及配置为准。
+MaxKB 返回有效文档 ID 后，本地同步即判定成功，不等待 MaxKB 后续的索引、向量化或问题生成完成。
+
+## 文件格式
+
+### MaxKB 直接上传
+
+`.txt`、`.md`、`.markdown`、`.pdf`、`.docx`、`.html`、`.xls`、`.xlsx`、`.csv`、`.zip`
+
+### MinerU 转换
+
+`.pdf`、`.png`、`.jpg`、`.jpeg`、`.bmp`、`.tiff`、`.gif`、`.webp`、`.jp2`、`.docx`、`.pptx`、`.xlsx`
+
+实际支持能力还取决于所连接的 MaxKB、在线 MinerU 或内网 MinerU 版本。任务中的“MinerU 转换范围”决定具体文件走直传还是转换路线：
+
+| 转换范围 | 处理方式 |
+| --- | --- |
+| MinerU 关闭 | 仅同步 MaxKB 可直接上传的格式 |
+| 留空 | MaxKB 支持的格式直接上传，其他格式尝试 MinerU |
+| `*` | MinerU 明确支持的格式全部转换，其余 MaxKB 格式直接上传 |
+| `.pdf,.pptx` 等 | 命中的格式使用 MinerU，未命中的格式按 MaxKB 直传能力处理 |
+
+完整处理规则和异常场景见[用户手册](USER_GUIDE.md#六文件格式与处理路线)。
 
 ## 快速开始
 
-### 1. 获取应用
+### 1. 安装应用
 
-从 GitHub Releases 下载对应平台的安装包：
+从 [GitHub Releases](https://github.com/fit2cloud-east-de/maxkb-local-file-sync/releases) 下载对应安装包：
 
-- Windows：`.exe` 安装包；安装时选择当前用户或所有用户，并可自定义安装目录。
-- macOS：`.dmg` 安装包；支持 Apple Silicon 和 Intel 版本。
+- Windows x64 / ARM64：下载 `.exe` 安装包；安装时可选择当前用户、所有用户和安装目录。
+- macOS Apple Silicon / Intel：下载 `.dmg`，将应用拖入 `Applications（应用程序）`。
 
-当前仓库主要托管源代码和发布文档，正式安装包应以 Releases 页面中的版本资产为准。
+### 2. 配置服务
 
-### 2. 配置 MaxKB
+进入“系统设置”完成 MaxKB 配置：
 
-启动应用后进入“系统设置” → “MaxKB 配置”：
-
-1. 填写 MaxKB Base URL。
+1. 填写 MaxKB Base URL，支持 HTTP 或 HTTPS。
 2. 填写 User Key / API Key。
-3. 点击“测试连接”，确认地址、凭据、License 和版本信息有效。
-4. 点击“保存配置”。
+3. 测试连接并保存配置。
+4. 如需文档转换，再启用并配置 MinerU 服务、产物目录和清理策略。
 
-Base URL 保存前会去除末尾 `/`，但保留用户配置的 HTTP 或 HTTPS，不会自动绕过 TLS 校验。
+### 3. 创建任务
 
-### 3. 配置 MinerU（可选）
+进入“同步任务”，点击“新建”，填写任务名称并选择：
 
-如果同步范围包含 MaxKB 不直接支持的文件类型，可以在“系统设置” → “MinerU 配置”中启用 MinerU，然后：
+- 本地文件夹；
+- 目标工作区；
+- 目标知识库；
+- 定时同步、删除策略和文件筛选规则；
+- 是否启用 MinerU，以及转换范围。
 
-1. 选择在线 MinerU 或内网 MinerU。
-2. 配置服务地址和访问 Token（如服务需要）。
-3. 配置产物保存目录。启用 MinerU 时该目录为必填项。
-4. 选择清理策略：不自动清理、按批次清理或按时间清理。
-5. 点击“测试连接”，确认服务可访问后保存配置。
+任务名称必须唯一；同一个本地文件夹允许创建多个任务。
 
-已经保存的 MinerU Token 会由系统凭据库复用；关闭 MinerU 后再次开启，不需要重复输入 Token。
+### 4. 执行与排障
 
-### 4. 创建同步任务
+保存任务后点击“立即同步”，或等待 Cron 定时触发。在“执行队列”查看批次和文件处理结果；远端结果不确定的操作在“异常处理”中由人工确认。
 
-在“同步任务”页面点击“新建”：
+![执行队列页面](docs/images/execution-queue.png)
 
-1. 选择一个本地文件夹。
-2. 选择目标工作空间和知识库目录。
-3. 选择一个知识库。
-4. 配置 Cron、删除策略、Include / Exclude 规则以及 MinerU 转换范围。
-5. 保存任务并点击“立即同步”，或等待定时调度执行。
+## 页面说明
 
-一个任务只绑定一个本地文件夹和一个 MaxKB 知识库。同一个客户端中，同一本地文件夹或同一个知识库不能被多个任务重复绑定。
+| 页面 | 用途 |
+| --- | --- |
+| 同步任务 | 新建、编辑、启用、关闭、删除和立即执行同步任务 |
+| 执行队列 | 查看任务分组、批次记录、文件明细、处理阶段和失败原因 |
+| 异常处理 | 处理远端结果不确定的上传、文档创建和删除操作 |
+| 系统设置 | 配置 MaxKB、MinerU、请求超时、产物目录和清理策略 |
 
-## 应用界面
+## 可靠性边界
 
-应用包含以下主要页面：
-
-- **同步任务**：查看任务、启用或关闭任务、立即同步、编辑配置和查看执行记录。
-- **执行队列**：以任务为单元查看排队和执行状态，进入后查看不同批次及文件明细。
-- **同步记录**：查看批次概览、单文件阶段、成功与失败信息、MaxKB 文档链接和 MinerU 处理信息。
-- **异常处理**：处理状态不明确的上传、批次创建、删除或远端状态核对事项。
-- **系统设置**：配置 MaxKB、MinerU、产物保存目录和自动清理策略。
+- 普通失败可以在问题修复后重新同步，重试批次只包含上次普通失败的文件。
+- 上传、智能分段、文档创建或删除发生超时、断网、TLS 错误、HTTP 429 或服务端错误时，远端结果可能已经生效，因此不会自动重试。
+- 无法确认的操作进入“异常处理”，可选择“确认远端成功”“确认不存在并重试”或“标记失败”。
+- 客户端只删除自身数据库中保存了文档 ID 的远端文档，不按文件名猜测或删除其他来源的文档。
+- 文件处理期间如果本地内容发生变化，远端引用会保留并进入人工确认，避免将错误版本标记为成功。
 
 ## 技术栈
 
-- **桌面框架**：[Wails v2](https://wails.io/)
-- **后端**：[Go](https://go.dev/)
-- **前端**：[Vue 3](https://vuejs.org/)、TypeScript、Vite
-- **UI 组件**：[Element Plus](https://element-plus.org/)、[`lucide-vue-next`](https://github.com/lucide-icons/lucide)
-- **状态管理与路由**：[Pinia](https://pinia.vuejs.org/)、[Vue Router](https://router.vuejs.org/)
-- **数据库**：SQLite，使用 `modernc.org/sqlite`，避免依赖 CGO
-- **调度**：[`robfig/cron`](https://github.com/robfig/cron)
-- **凭据存储**：[`go-keyring`](https://github.com/zalando/go-keyring)，对接 macOS Keychain 和 Windows Credential Manager
-
-## 系统要求
-
-### 运行应用
-
-- macOS：Apple Silicon 或 Intel；正式分发建议使用签名并完成公证的 DMG。
-- Windows：x64 或 ARM64；需要系统支持 WebView2 运行环境。
-
-### 开发和构建
-
-- Go 版本以 [`go.mod`](./go.mod) 为准。
-- Node.js 与 npm。
-- Wails CLI v2。
-- macOS 构建需要 Xcode Command Line Tools。
-- Windows 构建需要 Go、Node.js、Wails CLI、NSIS 及对应的 Windows 编译工具链。
+- 桌面框架：[Wails v2](https://wails.io/)
+- 后端：[Go](https://go.dev/)
+- 前端：[Vue 3](https://vuejs.org/)、TypeScript、Vite、Element Plus
+- 本地数据库：SQLite（`modernc.org/sqlite`）
+- 调度：`robfig/cron`
+- 凭据存储：macOS Keychain / Windows Credential Manager
 
 ## 本地开发
 
-克隆仓库后进入项目目录：
+### 环境要求
+
+- Go 版本以 [`go.mod`](go.mod) 为准
+- Node.js 与 npm
+- Wails CLI v2
+- macOS：Xcode Command Line Tools
+- Windows：WebView2、NSIS 及对应架构的编译环境
+
+### 启动开发环境
 
 ```bash
 git clone git@github.com:fit2cloud-east-de/maxkb-local-file-sync.git
 cd maxkb-local-file-sync
-```
 
-安装前端依赖：
-
-```bash
 cd frontend
-npm install
-```
-
-启动 Wails 开发模式：
-
-```bash
+npm ci --include=dev
 cd ..
+
 wails dev
 ```
 
-前端生产构建：
+### 代码检查
 
 ```bash
-cd frontend
-npm run build
-```
-
-Go 静态检查、测试和编译：
-
-```bash
-cd ..
+cd frontend && npm run build && cd ..
 go vet ./...
 go test ./... -count=1
-go test -race ./... -count=1
-go build ./...
 ```
 
 ## 构建安装包
 
-构建脚本位于 [`scripts/`](./scripts/)，构建产物位于 `dist/` 或 `build/bin/`，不会提交到 Git 仓库。
+构建产物位于 `dist/` 或 `build/bin/`，默认不提交到 Git 仓库。
 
-### macOS DMG
-
-在 macOS 主机执行：
+### macOS
 
 ```bash
 # Apple Silicon
@@ -182,22 +177,7 @@ go build ./...
 MACOS_ARCH=x64 ./scripts/build-macos-dmg.sh
 ```
 
-产物：
-
-```text
-dist/macos/MaxKB-Local-File-Sync-v<版本>-macos-arm64.dmg
-dist/macos/MaxKB-Local-File-Sync-v<版本>-macos-x64.dmg
-```
-
-DMG 采用 macOS 常见的 Finder 拖拽安装方式：双击 DMG，将应用拖入 `Applications`，复制完成后推出镜像，再从“应用程序”打开应用。
-
-正式发布时应配置 Developer ID 签名和 Apple 公证。具体环境变量和验证命令见 [`SIGNING_GUIDE.md`](./SIGNING_GUIDE.md)。
-
-### Windows EXE
-
-完整的 Windows x64 / ARM64 环境准备、依赖安装、打包、验证和常见问题处理，请参阅 [`WINDOWS_BUILD_GUIDE.md`](./WINDOWS_BUILD_GUIDE.md)。
-
-在 Windows 主机执行：
+### Windows
 
 ```powershell
 # x64
@@ -207,128 +187,34 @@ DMG 采用 macOS 常见的 Finder 拖拽安装方式：双击 DMG，将应用拖
 .\scripts\build-windows.ps1 -Architecture arm64
 ```
 
-每个平台生成一个 NSIS `.exe` 安装包。安装向导中可以选择：
+Windows 完整环境准备和排障说明见 [`WINDOWS_BUILD_GUIDE.md`](WINDOWS_BUILD_GUIDE.md)，签名与 macOS 公证说明见 [`SIGNING_GUIDE.md`](SIGNING_GUIDE.md)。
 
-- 仅当前用户安装；
-- 所有用户安装；
-- 自定义安装目录。
+## 数据与安全
 
-Windows 安装目录采用 `app/config/logs/data` 布局：程序文件只放在 `app`，安装器按安装范围为 `config/logs/data` 设置写权限。仅当前用户安装不触发 UAC；所有用户安装只在复制文件和设置 ACL 时触发一次 UAC。开始菜单、桌面快捷方式和安装完成页始终以普通权限启动应用。升级或卸载不会默认删除 `config/logs/data`、任务、映射、日志、SQLite 数据和系统凭据。
-
-Windows 点击窗口关闭按钮时，会显示“退出确认”，可选择直接退出或最小化到系统托盘。最小化到托盘后，同步和定时任务会继续运行，可通过托盘菜单恢复窗口或退出应用。macOS 关闭主窗口后继续在后台运行，并保留顶部菜单栏图标；此时不在 Dock 中显示运行指示点。通过顶部菜单栏或 Dock 重新打开应用时会恢复主窗口，选择“退出”才会完全停止应用。
-
-Windows 可执行文件、安装包和托盘图标统一由 `build/appicon.png` 生成；macOS 应用图标和 DMG 中的应用同样使用该文件作为唯一图标源。
-
-Windows 安装包签名示例：
-
-```powershell
-.\scripts\build-windows.ps1 `
-  -Architecture x64 `
-  -Sign `
-  -CertificateFile C:\secure\maxkb-signing.pfx `
-  -CertificatePassword $env:WINDOWS_CERT_PASSWORD
-```
-
-证书和密码只能通过受保护的发布环境提供，禁止提交到仓库。更多签名说明见 [`SIGNING_GUIDE.md`](./SIGNING_GUIDE.md)。
-
-### 发布前校验
-
-```bash
-./scripts/verify-release.sh
-```
-
-该脚本用于检查发布目录和 SHA-256 校验文件。发布包不得包含真实 API Key、Token、Cookie、用户资料、业务文件、SQLite 数据库或日志。
-
-## 数据目录
-
-Windows 正式安装后，应用使用安装向导中选择的目录；macOS 和 Windows 开发模式仍使用平台用户数据目录：
+默认数据位置：
 
 ```text
-Windows 安装版: <安装目录>
-Windows 开发版: %LOCALAPPDATA%\MaxKB\MaxKB 本地文件同步工具
-macOS:          ~/Library/Application Support/MaxKB/MaxKB 本地文件同步工具
+Windows 安装版: <安装目录>\data
+Windows 开发版: %LOCALAPPDATA%\MaxKB\MaxKB 本地文件同步工具\data
+macOS:          ~/Library/Application Support/MaxKB/MaxKB 本地文件同步工具/data
 ```
 
-Windows 安装目录包含：
+- MaxKB API Key、在线 MinerU Token 和内网网关 Token 不写入 SQLite、日志或导出文件。
+- 系统凭据库不可用时不会降级为明文保存。
+- 日志、错误详情和响应摘要会过滤凭据、Cookie、预签名 URL 等敏感内容。
+- ZIP 解压会校验路径、符号链接和重复条目，避免路径穿越。
+- 升级和卸载默认不删除任务、SQLite、日志及系统凭据。
 
-```text
-app/             程序和图标，不存运行数据
-config/          应用配置目录
-logs/            应用日志
-data/            SQLite 数据库
-data/snapshots/  文件扫描快照
-data/temp/       临时文件
-data/backups/    数据库备份
-```
+## 文档
 
-应用启动时会执行版本化 SQLite 迁移。迁移失败时应停止启动并保留原数据库，不应通过删除数据库或跳过迁移来恢复。
+- [用户操作手册](USER_GUIDE.md)
+- [Windows 打包手册](WINDOWS_BUILD_GUIDE.md)
+- [签名与公证](SIGNING_GUIDE.md)
+- [在线更新方案](UPDATE_PLAN.md)
+- [构建资源说明](build/README.md)
 
-## 安全说明
+## License
 
-- MaxKB API Key、在线 MinerU Token、内网网关 Token 不写入 SQLite 明文、日志或导出文件。
-- macOS 使用 Keychain，Windows 使用 Credential Manager；系统凭据库不可用时不会降级为明文保存。
-- 凭据输入框默认隐藏，已保存凭据不会完整回显。
-- HTTP 请求只发送必要请求头，不复制浏览器 Cookie、Referer、Origin、User-Agent 或 `Sec-Fetch-*` 请求头。
-- 不自动绕过 TLS 校验。
-- 预签名上传 URL、Authorization、Token 和服务端错误中的敏感信息不会进入普通日志。
-- ZIP 处理使用安全路径校验，避免路径穿越。
-- 删除任务、修改知识库和切换本地文件夹只修改客户端自身映射，不会删除不属于本客户端管理的远端文档。
+Copyright (c) FIT2CLOUD 飞致云
 
-## 在线更新策略
-
-项目后续以 GitHub Releases 作为正式发布源，更新方案遵循以下原则：
-
-- PATCH 和 MINOR 版本可以在应用内检查、下载并引导升级。
-- MAJOR 版本涉及运行时、数据库或权限不兼容时，提示用户重新安装。
-- 更新包下载到应用私有临时目录后，先校验平台、架构、版本、SHA-256 和代码签名，再启动外部安装器或升级器。
-- 更新过程不删除用户数据、SQLite、日志、任务映射和系统凭据。
-- 同步批次执行期间不强制退出应用；升级失败时保留当前可运行版本。
-
-当前仓库的详细发布与升级设计见 [`UPDATE_PLAN.md`](./UPDATE_PLAN.md)。
-
-## 真实服务验证
-
-本地单元测试、模拟契约测试和构建验证不能替代真实服务端到端验证。接入生产或测试环境前，请使用不包含敏感业务内容的测试文件、专用测试知识库和虚构或专用凭据。
-
-仍需在真实环境重点验证：
-
-- MaxKB v2.10.4-lts 的工作空间、知识库、文档列表分页和文档状态字段。
-- MaxKB `split`、`batch_create`、文档删除及异步处理结果。
-- 在线 MinerU 的上传地址、批次状态、结果 ZIP 地址和状态枚举。
-- 项目锁定版本内网 MinerU 的 `/health`、`/tasks`、`status_url`、`result_url` 和 ZIP 响应。
-- Windows x64 / ARM64 的安装、权限、WebView2、升级和卸载行为。
-- macOS x64 / arm64 的安装、签名、公证、首次启动和升级行为。
-
-遇到无法从需求、真实响应或指定源码确认的接口行为时，客户端会将协议解析隔离在 Adapter 中，不根据名称或未确认字段猜测成功结果。
-
-## 项目结构
-
-```text
-maxkb-local-file-sync/
-├── app.go                         # Wails 对外绑定入口
-├── main.go                        # 应用启动入口
-├── internal/
-│   ├── adapter/                   # MaxKB、在线 MinerU、内网 MinerU Adapter
-│   ├── api/                       # 面向前端的 DTO 与 API 门面
-│   ├── app/                       # 应用组装、配置和生命周期
-│   ├── core/                      # 扫描、差异、流水线、队列、调度和状态机
-│   ├── infra/                     # 数据库、凭据、文件、HTTP、日志和平台能力
-│   └── pkg/types/                 # 状态、阶段和领域类型
-├── migrations/                    # SQLite 版本化迁移
-├── frontend/src/                  # Vue 3 页面、组件、Store 和路由
-├── build/                         # Wails 平台构建资源
-├── scripts/                       # macOS DMG、Windows EXE 和发布校验脚本
-└── wails.json                     # Wails 应用配置
-```
-
-## 相关文档
-
-- [`USER_GUIDE.md`](./USER_GUIDE.md)：日常安装、配置、同步和问题处理操作手册。
-- [`SIGNING_GUIDE.md`](./SIGNING_GUIDE.md)：Windows 和 macOS 签名、公证及发布凭据说明。
-- [`UPDATE_PLAN.md`](./UPDATE_PLAN.md)：GitHub Releases 在线更新和版本升级方案。
-- [`build/README.md`](./build/README.md)：Wails 构建资源及平台构建边界。
-- [`frontend/README.md`](./frontend/README.md)：前端开发说明。
-
-## 许可证
-
-本项目采用 [Apache License 2.0](./LICENSE) 授权。
+本项目遵循 [Apache License 2.0](LICENSE) 开源协议。
