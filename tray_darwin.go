@@ -8,6 +8,8 @@ package main
 
 void startDarwinTray(const void *iconBytes, int iconLength);
 void stopDarwinTray(void);
+void hideDarwinApplicationFromDock(void);
+void showDarwinApplicationInDock(void);
 */
 import "C"
 
@@ -58,6 +60,19 @@ func (t *darwinTrayController) Stop() {
 		darwinTrayMu.Unlock()
 		C.stopDarwinTray()
 	})
+}
+
+// platformWindowHidden switches the app to accessory mode after its main
+// window closes. The status item remains available, but macOS removes the
+// running application from the Dock and therefore removes its indicator dot.
+func platformWindowHidden() {
+	C.hideDarwinApplicationFromDock()
+}
+
+// platformWindowShown restores normal Dock participation before Wails brings
+// the main window to the foreground.
+func platformWindowShown() {
+	C.showDarwinApplicationInDock()
 }
 
 //export darwinTrayShowMainWindow

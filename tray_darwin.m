@@ -1,6 +1,8 @@
 //go:build darwin
 
 #import <Cocoa/Cocoa.h>
+#import <dispatch/dispatch.h>
+#import <objc/runtime.h>
 
 #include "_cgo_export.h"
 
@@ -21,6 +23,36 @@
 
 static NSStatusItem *maxKBStatusItem;
 static MaxKBTrayTarget *maxKBTrayTarget;
+static NSMenu *maxKBDockMenu;
+
+static BOOL maxKBApplicationShouldHandleReopen(id self, SEL command, NSApplication *sender, BOOL hasVisibleWindows) {
+    darwinTrayShowMainWindow();
+    return YES;
+}
+
+static NSMenu *maxKBApplicationDockMenu(id self, SEL command, NSApplication *sender) {
+    return maxKBDockMenu;
+}
+
+// Wails owns the application delegate. Register only the selectors it does
+// not provide instead of replacing that delegate or linking against Wails'
+// private AppDelegate class directly.
+static void maxKBInstallDockDelegateHooks(void) {
+    id delegate = NSApp.delegate;
+    if (delegate == nil) {
+        return;
+    }
+    Class delegateClass = object_getClass(delegate);
+    char reopenTypes[] = {@encode(BOOL)[0], '@', ':', '@', @encode(BOOL)[0], '\0'};
+    class_addMethod(delegateClass,
+                    @selector(applicationShouldHandleReopen:hasVisibleWindows:),
+                    (IMP)maxKBApplicationShouldHandleReopen,
+                    reopenTypes);
+    class_addMethod(delegateClass,
+                    @selector(applicationDockMenu:),
+                    (IMP)maxKBApplicationDockMenu,
+                    "@@:@");
+}
 
 @interface MaxKBTrayInstaller : NSObject
 + (void)installWithIconData:(NSData *)iconData;
@@ -55,6 +87,20 @@ static MaxKBTrayTarget *maxKBTrayTarget;
     exitItem.target = maxKBTrayTarget;
     [menu addItem:exitItem];
     maxKBStatusItem.menu = menu;
+
+    maxKBDockMenu = [[NSMenu alloc] initWithTitle:@"MaxKB 本地文件同步工具"];
+    NSMenuItem *dockShowItem = [[NSMenuItem alloc] initWithTitle:@"显示主界面"
+                                                         action:@selector(showMainWindow:)
+                                                  keyEquivalent:@""];
+    dockShowItem.target = maxKBTrayTarget;
+    [maxKBDockMenu addItem:dockShowItem];
+    [maxKBDockMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *dockExitItem = [[NSMenuItem alloc] initWithTitle:@"退出"
+                                                         action:@selector(exitApplication:)
+                                                  keyEquivalent:@""];
+    dockExitItem.target = maxKBTrayTarget;
+    [maxKBDockMenu addItem:dockExitItem];
+    maxKBInstallDockDelegateHooks();
 }
 
 + (void)remove {
@@ -62,9 +108,18 @@ static MaxKBTrayTarget *maxKBTrayTarget;
         [[NSStatusBar systemStatusBar] removeStatusItem:maxKBStatusItem];
         maxKBStatusItem = nil;
     }
+    maxKBDockMenu = nil;
     maxKBTrayTarget = nil;
 }
 @end
+
+static void maxKBRunOnMainThread(dispatch_block_t block) {
+    if ([NSThread isMainThread]) {
+        block();
+        return;
+    }
+    dispatch_sync(dispatch_get_main_queue(), block);
+}
 
 void startDarwinTray(const void *iconBytes, int iconLength) {
     NSData *iconData = [NSData dataWithBytes:iconBytes length:(NSUInteger)iconLength];
@@ -77,4 +132,18 @@ void stopDarwinTray(void) {
     [MaxKBTrayInstaller performSelectorOnMainThread:@selector(remove)
                                         withObject:nil
                                      waitUntilDone:NO];
+}
+
+void hideDarwinApplicationFromDock(void) {
+    maxKBRunOnMainThread(^{
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    });
+}
+
+void showDarwinApplicationInDock(void) {
+    maxKBRunOnMainThread(^{
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        [NSApp unhide:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+    });
 }

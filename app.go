@@ -108,8 +108,7 @@ func (a *App) startup(ctx context.Context) {
 	// unsupported platforms use a no-op implementation.
 	a.tray = newTrayController(a.ctx)
 	if err := a.tray.Start(func() {
-		runtime.WindowShow(a.ctx)
-		runtime.WindowUnminimise(a.ctx)
+		a.showMainWindow()
 	}, func() {
 		a.exitRequested.Store(true)
 		runtime.Quit(a.ctx)
@@ -119,7 +118,7 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // beforeClose is called by Wails before the native window is closed.
-// Windows asks how to close until the user remembers a choice. On macOS the
+// Windows asks how to close. On macOS the
 // close button always hides the main window; the menu-bar Exit action is the
 // explicit way to stop the background sync engine.
 func (a *App) beforeClose(ctx context.Context) bool {
@@ -133,6 +132,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 			return false
 		}
 		runtime.WindowHide(ctx)
+		platformWindowHidden()
 		return true
 	}
 
@@ -161,6 +161,16 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	default:
 		return true
 	}
+}
+
+func (a *App) showMainWindow() {
+	if a.ctx == nil {
+		return
+	}
+	platformWindowShown()
+	runtime.Show(a.ctx)
+	runtime.WindowShow(a.ctx)
+	runtime.WindowUnminimise(a.ctx)
 }
 
 // ResolveCloseRequest applies the choice made in the frontend close dialog.

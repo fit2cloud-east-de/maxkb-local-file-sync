@@ -55,3 +55,7 @@ func (t *windowsTrayController) Start(show func(), exit func()) error {
 func (t *windowsTrayController) Stop() {
 	t.stopOnce.Do(func() { systray.Quit() })
 }
+
+func platformWindowHidden() {}
+
+func platformWindowShown() {}
